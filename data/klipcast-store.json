@@ -1,0 +1,1104 @@
+{
+  "episodes": [
+    {
+      "id": "ep-1794851032045",
+      "videoId": "arj7oStGLkU",
+      "sourceUrl": "https://www.youtube.com/watch?v=arj7oStGLkU",
+      "title": "Inside the Mind of a Master Procrastinator | Tim Urban | TED",
+      "channelName": "TED",
+      "thumbnailUrl": "https://i.ytimg.com/vi/arj7oStGLkU/hqdefault.jpg",
+      "fallbackImageUrl": "/src/assets/images/podcast_creator_desk_1794847027324.jpg",
+      "durationSec": 1800,
+      "transcriptSource": "metadata_and_search",
+      "episodeSummary": "Tim Urban membongkar psikologi di balik kebiasaan menunda-nunda (procrastination) dengan cara yang jenaka namun mendalam. Ia memperkenalkan karakter imajiner di dalam otak, seperti Pengambil Keputusan Rasional, Monyet Kepuasan Instan, dan Monster Kepanikan, untuk menjelaskan mengapa kita sering gagal mengerjakan tugas tepat waktu. Di akhir sesi, ia mengingatkan bahwa penundaan paling berbahaya justru terjadi pada hal-hal penting yang tidak memiliki tenggat waktu.",
+      "keyTopics": [
+        "Konflik antara Pengambil Keputusan Rasional dan Monyet Kepuasan Instan",
+        "Peran Monster Kepanikan sebagai pemicu kerja di detik-detik terakhir",
+        "Bahaya penundaan jangka panjang pada impian dan tujuan hidup tanpa tenggat waktu"
+      ],
+      "createdAt": "2026-11-16T17:44:33.894Z"
+    },
+    {
+      "id": "ep-1794848023564",
+      "videoId": "6QyRGE6Cg8E",
+      "sourceUrl": "https://youtu.be/6QyRGE6Cg8E",
+      "title": "Ketika Dokter Tirta, Aloy, dan Niko Bertemu",
+      "channelName": "Raditya Dika",
+      "thumbnailUrl": "https://i.ytimg.com/vi/6QyRGE6Cg8E/hqdefault.jpg",
+      "fallbackImageUrl": "/src/assets/images/podcast_creator_desk_1794847027324.jpg",
+      "durationSec": 1800,
+      "transcriptSource": "metadata_and_search",
+      "episodeSummary": "Raditya Dika mempertemukan Dokter Tirta, Aloy, dan Niko dalam satu obrolan santai penuh canda namun sarat insight tentang dunia bisnis, kesehatan, dan dinamika pertemanan kreator. Mereka saling melempar cerita absurd, pengalaman membangun karier dari nol, hingga cara menghadapi tekanan publik di media sosial.",
+      "keyTopics": [
+        "Dinamika pertemanan dan kolaborasi antar kreator serta pengusaha",
+        "Realita membangun bisnis, personal branding, dan menghadapi kritik netizen",
+        "Gaya hidup sehat di tengah kesibukan kerja ala Dokter Tirta"
+      ],
+      "createdAt": "2026-11-16T16:54:12.696Z"
+    },
+    {
+      "id": "ep-seed-1",
+      "videoId": "aircAruvnKk",
+      "sourceUrl": "https://www.youtube.com/watch?v=aircAruvnKk",
+      "title": "Strategi Konten Podcast: Mengubah Diskusi 90 Menit Menjadi Klip Shorts Berdampak",
+      "channelName": "Ruang Bicara Studio",
+      "thumbnailUrl": "/src/assets/images/podcast_studio_tech_1794847026161.jpg",
+      "fallbackImageUrl": "/src/assets/images/podcast_studio_tech_1794847026161.jpg",
+      "durationSec": 2840,
+      "transcriptSource": "curated_sample",
+      "episodeSummary": "Episode ini membahas bagaimana podcaster dan tim produksi memetakan struktur percakapan berdurasi panjang menjadi potongan video vertikal 30–50 detik yang kuat di tiga detik pertama, sekaligus mendistribusikan ringkasan teksnya ke YouTube Shorts, TikTok, Reels, X, dan LinkedIn.",
+      "keyTopics": [
+        "Struktur hook 3 detik pertama untuk retensi Shorts",
+        "Teknik memilih argumen kontras dalam wawancara podcast",
+        "Otomatisasi subtitle dinamis dan ringkasan lintas platform"
+      ],
+      "createdAt": "2026-11-16T07:30:00.000Z"
+    }
+  ],
+  "clips": [
+    {
+      "id": "ep-1794851032045-clip-1",
+      "episodeId": "ep-1794851032045",
+      "orderIndex": 1,
+      "title": "Apa Bedanya Otak Procrastinator & Bukan?",
+      "hookLine": "Pernah niat kerja, tapi ujung-ujungnya malah scroll media sosial berjam-jam?",
+      "startSec": 180,
+      "endSec": 225,
+      "ringkasanTeks": "Tim Urban menjelaskan perbedaan otak seorang penunda dan non-penunda melalui metafora setir kemudi. Di otak penunda, ada Monyet Kepuasan Instan yang merebut kendali dan hanya peduli pada kesenangan saat ini.",
+      "poinKunci": [
+        "Otak penunda memiliki Pengambil Keputusan Rasional yang sering kalah dominan",
+        "Monyet Kepuasan Instan hanya hidup di masa kini tanpa memikirkan masa depan",
+        "Aktivitas mudah dan menyenangkan selalu menang melawan tugas yang butuh fokus"
+      ],
+      "transcriptExcerpt": "5 And, a couple years ago, I decided to write about procrastination. My behavior is always perplexed the non-procrastinators around me, and I wanted to explain to the non-procrastinators of the world what goes on in the heads of procrastinators and why we are the way we are. Now, I have a hypothesis that the the brains of procrastinators were actually different than the brains of other people. And to test this, I found an MRI lab that actually let me scan both my brain and the brain of a proven non-procrastinator. And I so I could compare them, and I actually brought them here to show you today. And I want you to take a look carefully to see if you can notice a difference. And I know that if you're not a trained brain expert, it's not that obvious, but just take a look, okay? So here's the brain of a non-procrastinator.",
+      "captionCues": [
+        {
+          "offsetSec": 0,
+          "durationSec": 0.8,
+          "text": "5"
+        },
+        {
+          "offsetSec": 1,
+          "durationSec": 4,
+          "text": "Dan, beberapa tahun lalu saya"
+        },
+        {
+          "offsetSec": 5,
+          "durationSec": 0.5,
+          "text": "memutuskan untuk menulis tentang prokrastinasi"
+        },
+        {
+          "offsetSec": 5.5,
+          "durationSec": 4.5,
+          "text": "Perilaku saya selalu membuat bingung para bukan penunda di sekitar saya"
+        },
+        {
+          "offsetSec": 10,
+          "durationSec": 3.5,
+          "text": "Saya ingin menjelaskan kepada dunia apa yang terjadi di kepala penunda"
+        },
+        {
+          "offsetSec": 13.5,
+          "durationSec": 5,
+          "text": "Saya punya hipotesis bahwa otak penunda sebenarnya berbeda"
+        },
+        {
+          "offsetSec": 18.5,
+          "durationSec": 4,
+          "text": "dibandingkan otak orang lain"
+        },
+        {
+          "offsetSec": 22.5,
+          "durationSec": 6.5,
+          "text": "Untuk menguji ini, saya menemukan lab MRI untuk memindai otak saya"
+        },
+        {
+          "offsetSec": 29,
+          "durationSec": 4,
+          "text": "dan membandingkannya dengan seorang bukan penunda"
+        },
+        {
+          "offsetSec": 33,
+          "durationSec": 3.5,
+          "text": "Mari kita lihat perbedaannya"
+        },
+        {
+          "offsetSec": 36.5,
+          "durationSec": 4.5,
+          "text": "Mungkin tidak terlalu terlihat bagi orang awam"
+        },
+        {
+          "offsetSec": 41,
+          "durationSec": 4.08,
+          "text": "Ini adalah otak seorang bukan penunda"
+        }
+      ],
+      "priorityLabel": "Sorotan Utama",
+      "status": "draft",
+      "publishedPlatforms": [],
+      "platformCopies": {
+        "youtube_shorts": {
+          "title": "Apa Bedanya Otak Procrastinator & Bukan?",
+          "caption": "Pernah penasaran apa yang terjadi di otak seorang penunda pekerjaan alias procrastinator? Tim Urban membongkarnya lewat scan MRI! Apa kamu bisa melihat perbedaannya? Coba tulis pendapatmu di kolom komentar! #Procrastination #Otak #TimUrban #Psikologi #Shorts",
+          "hashtags": [
+            "#Procrastination",
+            "#Otak",
+            "#TimUrban",
+            "#Psikologi",
+            "#Shorts"
+          ]
+        },
+        "tiktok": {
+          "title": "Dalang di Balik Kebiasaan Menunda Tugas",
+          "caption": "Bukan malas, ternyata ada monyet di otak yang suka ambil alih setir! Tag temanmu yang hobi menunda.",
+          "hashtags": [
+            "#produktivitas",
+            "#selfimprovement",
+            "#procrastination",
+            "#fyp",
+            "#belajar"
+          ]
+        },
+        "instagram_reels": {
+          "title": "Monyet Kepuasan Instan di Otak Kita",
+          "caption": "Setiap kali mau mulai kerja tapi malah terdistraksi, ingatlah konsep dari Tim Urban ini. Monyet Kepuasan Instan sedang beraksi!",
+          "hashtags": [
+            "#reelsindonesia",
+            "#pengembangandiri",
+            "#manajemenwaktu",
+            "#tedtalks",
+            "#mindset"
+          ]
+        },
+        "x_twitter": {
+          "title": "Kenapa kita sering menunda?",
+          "caption": "Tim Urban punya penjelasan jenius soal kenapa kita sering kalah sama distraksi: Monyet Kepuasan Instan di otak kita.",
+          "hashtags": [
+            "#Produktivitas",
+            "#TED",
+            "#Mindset"
+          ]
+        },
+        "linkedin": {
+          "title": "Memahami Psikologi Penundaan Kerja ala Tim Urban",
+          "caption": "Mengapa profesional yang cerdas sekalipun masih sering menunda pekerjaan? Tim Urban menjelaskannya lewat konflik antara logika dan dorongan kepuasan instan.",
+          "hashtags": [
+            "#Productivity",
+            "#TimeManagement",
+            "#CareerGrowth",
+            "#Psychology"
+          ]
+        }
+      },
+      "renderedClipUrl": "/api/clips/ep-1794851032045-clip-1/video?t=1795118833087",
+      "renderedLayout": "shorts_full_bleed",
+      "renderedQuality": "1080p",
+      "subtitleAccuracySource": "audio_transcribed",
+      "autoGeneratedTitle": "Apa Bedanya Otak Procrastinator & Bukan?",
+      "autoGeneratedCaption": "Pernah penasaran apa yang terjadi di otak seorang penunda pekerjaan alias procrastinator? Tim Urban membongkarnya lewat scan MRI! Apa kamu bisa melihat perbedaannya? Coba tulis pendapatmu di kolom komentar! #Procrastination #Otak #TimUrban #Psikologi #Shorts",
+      "speakerFocusSummary": "Video menampilkan seorang pembicara yang menjelaskan perbedaan pola pikir dan fungsi otak antara orang yang sering menunda pekerjaan dengan yang tidak.",
+      "renderedSourceWidth": 640,
+      "renderedSourceHeight": 360,
+      "renderedSourceType": "third_party_downloader",
+      "renderedFileSizeBytes": 19356318
+    },
+    {
+      "id": "ep-1794851032045-clip-2",
+      "episodeId": "ep-1794851032045",
+      "orderIndex": 2,
+      "title": "Monster Kepanikan: Satu-Satunya Hal yang Ditakuti Penunda",
+      "hookLine": "Kok bisa tugas yang harusnya sebulan selesai dalam semalam?",
+      "startSec": 380,
+      "endSec": 425,
+      "ringkasanTeks": "Ketika tenggat waktu sudah di depan mata, muncullah Monster Kepanikan yang membuat Monyet Kepuasan Instan kabur ketakutan. Momen inilah yang akhirnya mengembalikan kendali kepada Pengambil Keputusan Rasional.",
+      "poinKunci": [
+        "Monster Kepanikan adalah satu-satunya entitas yang ditakuti Monyet Kepuasan Instan",
+        "Rasa panik akibat deadline memicu fokus ekstrem di detik-detik terakhir",
+        "Sistem ini menjelaskan mengapa penunda tetap bisa menyelesaikan tugas tepat waktu"
+      ],
+      "transcriptExcerpt": "Untungnya, ada satu hal yang sangat ditakuti oleh Monyet Kepuasan Instan, yaitu Monster Kepanikan. Begitu deadline sudah sangat dekat, monster ini bangun dan membuat si monyet lari tunggang langgang.",
+      "captionCues": [
+        {
+          "offsetSec": 0,
+          "durationSec": 10,
+          "text": "Kok bisa tugas sebulan kelar dalam semalam?"
+        },
+        {
+          "offsetSec": 10,
+          "durationSec": 12,
+          "text": "Jawabannya adalah Monster Kepanikan yang baru bangun saat mepet deadline."
+        },
+        {
+          "offsetSec": 22,
+          "durationSec": 12,
+          "text": "Monyet Kepuasan Instan langsung kabur ketakutan melihat monster ini."
+        },
+        {
+          "offsetSec": 34,
+          "durationSec": 11,
+          "text": "Akhirnya otak rasional kembali memegang kendali dan kita kerja non-stop."
+        }
+      ],
+      "priorityLabel": "Sorotan Utama",
+      "status": "draft",
+      "publishedPlatforms": [],
+      "platformCopies": {
+        "youtube_shorts": {
+          "title": "Kekuatan The Power of Kepepet Menurut TED Talk #Shorts",
+          "caption": "Penjelasan kocak tapi akurat soal kenapa kita baru bisa fokus kerja pas sudah mepet deadline!",
+          "hashtags": [
+            "#Shorts",
+            "#Deadline",
+            "#PowerOfKepepet",
+            "#TimUrban",
+            "#TED"
+          ]
+        },
+        "tiktok": {
+          "title": "The Power of Kepepet Itu Nyata!",
+          "caption": "Siapa nih tim SKS (Sistem Kebut Semalam)? Ternyata ini yang terjadi di otak kita pas lagi panik.",
+          "hashtags": [
+            "#sistemkebutsemalam",
+            "#mahasiswa",
+            "#kerjakantor",
+            "#tedtalk",
+            "#fyp"
+          ]
+        },
+        "instagram_reels": {
+          "title": "Saat Monster Kepanikan Mengambil Alih",
+          "caption": "Mengandalkan Monster Kepanikan memang bikin tugas selesai, tapi capeknya luar biasa. Yuk mulai atur ritme kerja lebih baik!",
+          "hashtags": [
+            "#tipsproduktivitas",
+            "#manajemenwaktu",
+            "#reelsedukasi",
+            "#tedtalks"
+          ]
+        },
+        "x_twitter": {
+          "title": "Rahasia di balik sistem kebut semalam",
+          "caption": "Cuma Monster Kepanikan yang bisa bikin Monyet Kepuasan Instan kabur. Tapi masa iya harus nunggu panik dulu baru kerja?",
+          "hashtags": [
+            "#Deadline",
+            "#Produktivitas",
+            "#TimUrban"
+          ]
+        },
+        "linkedin": {
+          "title": "Bahaya Mengandalkan Adrenalin Deadline dalam Bekerja",
+          "caption": "Mengandalkan Monster Kepanikan memang sering menyelamatkan kita dari tenggat waktu, namun dalam jangka panjang hal ini memicu stres dan kelelahan mental.",
+          "hashtags": [
+            "#WorkLifeBalance",
+            "#Productivity",
+            "#Leadership",
+            "#MentalHealth"
+          ]
+        }
+      }
+    },
+    {
+      "id": "ep-1794851032045-clip-3",
+      "episodeId": "ep-1794851032045",
+      "orderIndex": 3,
+      "title": "Penundaan Paling Berbahaya: Hal Penting Tanpa Deadline",
+      "hookLine": "Apa jadinya kalau impianmu tidak punya tenggat waktu?",
+      "startSec": 650,
+      "endSec": 700,
+      "ringkasanTeks": "Tim Urban mengingatkan bahwa penundaan paling berbahaya bukanlah soal tugas kantor atau kuliah, melainkan hal-hal penting tanpa deadline seperti kesehatan, hubungan, atau merintis usaha. Tanpa tenggat waktu, Monster Kepanikan tidak akan pernah datang menyelamatkan kita.",
+      "poinKunci": [
+        "Ada dua jenis penundaan: yang memiliki deadline dan yang tidak memiliki deadline",
+        "Penundaan tanpa deadline membuat Monster Kepanikan tidak pernah muncul",
+        "Penyesalan jangka panjang sering datang dari impian yang terus ditunda tanpa batas waktu"
+      ],
+      "transcriptExcerpt": "Ketika tidak ada tenggat waktu, Monster Kepanikan tidak pernah muncul. Akibatnya efek dari penundaan ini tidak terasa dalam hitungan hari, melainkan menumpuk diam-diam selama bertahun-tahun.",
+      "captionCues": [
+        {
+          "offsetSec": 0,
+          "durationSec": 12,
+          "text": "Hati-hati dengan penundaan pada hal-hal yang tidak punya deadline."
+        },
+        {
+          "offsetSec": 12,
+          "durationSec": 13,
+          "text": "Misalnya olahraga, merintis bisnis, atau menghabiskan waktu bersama keluarga."
+        },
+        {
+          "offsetSec": 25,
+          "durationSec": 13,
+          "text": "Karena tidak ada deadline, Monster Kepanikan tidak akan pernah datang."
+        },
+        {
+          "offsetSec": 38,
+          "durationSec": 12,
+          "text": "Jangan tunggu sampai tua baru sadar waktu kita di dunia ini terbatas."
+        }
+      ],
+      "priorityLabel": "Klip Pendukung",
+      "status": "draft",
+      "publishedPlatforms": [],
+      "platformCopies": {
+        "youtube_shorts": {
+          "title": "Jebakan Penundaan Tanpa Deadline yang Bikin Menyesal #Shorts",
+          "caption": "Pesan paling menampar dari Tim Urban: jangan menunda hal-hal penting yang tidak punya tenggat waktu.",
+          "hashtags": [
+            "#Shorts",
+            "#Motivasi",
+            "#SelfImprovement",
+            "#TimUrban",
+            "#TEDTalks"
+          ]
+        },
+        "tiktok": {
+          "title": "Penundaan yang Diam-Diam Menghancurkan Mimpi",
+          "caption": "Kalau tugas ada deadlinenya, tapi impianmu tidak. Mulai langkah kecilnya hari ini sebelum terlambat!",
+          "hashtags": [
+            "#motivasi",
+            "#pengembangandiri",
+            "#quotes",
+            "#mindset",
+            "#fyp"
+          ]
+        },
+        "instagram_reels": {
+          "title": "Jangan Tunggu Deadline untuk Hal Penting",
+          "caption": "Kesehatan, keluarga, dan impian pribadi tidak punya tanggal jatuh tempo. Jangan biarkan Monyet Kepuasan Instan mencuri waktumu.",
+          "hashtags": [
+            "#selfreminder",
+            "#lifegoals",
+            "#produktivitas",
+            "#reelsindonesia"
+          ]
+        },
+        "x_twitter": {
+          "title": "Penundaan paling berbahaya",
+          "caption": "Penundaan tanpa deadline adalah jebakan paling senyap. Tidak ada rasa panik, tapi tiba-tiba tahun berlalu begitu saja.",
+          "hashtags": [
+            "#Mindset",
+            "#SelfReminder",
+            "#TEDTalks"
+          ]
+        },
+        "linkedin": {
+          "title": "Mengapa Tujuan Karier Jangka Panjang Sering Terbengkalai?",
+          "caption": "Tugas harian selalu punya tenggat waktu, tetapi pengembangan diri dan visi jangka panjang sering kali tidak. Jadilah proaktif sebelum waktu yang memaksa kita berhenti.",
+          "hashtags": [
+            "#CareerDevelopment",
+            "#PersonalGrowth",
+            "#Strategy",
+            "#Mindset"
+          ]
+        }
+      }
+    },
+    {
+      "id": "ep-1794848023564-clip-1",
+      "episodeId": "ep-1794848023564",
+      "orderIndex": 1,
+      "title": "Dendam Kesumat Dokter Tirta ke Radit!",
+      "hookLine": "Lu tuh bukan sibuk, tapi manajemen stresnya yang berantakan!",
+      "startSec": 215,
+      "endSec": 258,
+      "ringkasanTeks": "Dokter Tirta langsung mengomentari pola tidur dan kebiasaan begadang Aloy yang dinilai berbahaya bagi kesehatan jangka panjang. Momen ini memicu gelak tawa karena disampaikan dengan gaya khas Tirta yang blak-blakan namun tetap edukatif.",
+      "poinKunci": [
+        "Bahaya kurang tidur kronis bagi produktivitas",
+        "Pentingnya membedakan kerja keras dan kelelahan tidak perlu",
+        "Gaya komunikasi blak-blakan Dokter Tirta yang menghibur"
+      ],
+      "transcriptExcerpt": "tim bola. Saya juga kok. Oh, ya lah lu doang. Padahal pas tim bola Iya. Gue kan saya juga pas terakhir ngikutin ada orang kemarin kayak kalah empat satu kayaknya empat satu. Tetangga, tapi saya enggak mau bahas karena kasihan. Ya namanya juga kan pertandingan bola. Betul ada yang menang kadang kadang kalah. Ya kan Liverpool juga pernah ngalamin itu. Ya, kan ada yang ngerujak saya. Saya ingat ya, saya masih dendam ya. 6 bulan lalu anda membuat saya viral gara-gara. Lagi apa? Liverpool. Saya bilang apa? Oh tim yang kalah sama, oh Brentford papan bawah saya ingat. Ingat dendam. Dendam, dendam lagi. Iya, ben dong. Garing gak saya sudah pakai kostum lebah ya. Lihat. Saya janji, saya janji satu hal. Iya, saya",
+      "captionCues": [
+        {
+          "offsetSec": 0,
+          "durationSec": 0.77,
+          "text": "tim bola."
+        },
+        {
+          "offsetSec": 0.77,
+          "durationSec": 1.44,
+          "text": "Saya juga kok."
+        },
+        {
+          "offsetSec": 2.21,
+          "durationSec": 2.46,
+          "text": "Oh, ya lah lu doang. Padahal pas tim bola"
+        },
+        {
+          "offsetSec": 4.67,
+          "durationSec": 2.14,
+          "text": "Iya. Gue kan saya juga pas terakhir ngikutin"
+        },
+        {
+          "offsetSec": 6.81,
+          "durationSec": 2.17,
+          "text": "ada orang kemarin kayak kalah empat satu"
+        },
+        {
+          "offsetSec": 8.98,
+          "durationSec": 3.07,
+          "text": "kayaknya empat satu. Tetangga, tapi saya enggak mau bahas karena kasihan."
+        },
+        {
+          "offsetSec": 12.05,
+          "durationSec": 2.45,
+          "text": "Ya namanya juga kan pertandingan bola."
+        },
+        {
+          "offsetSec": 14.5,
+          "durationSec": 3.25,
+          "text": "Betul ada yang menang kadang kadang kalah."
+        },
+        {
+          "offsetSec": 17.75,
+          "durationSec": 1.6,
+          "text": "Ya kan Liverpool juga pernah ngalamin itu."
+        },
+        {
+          "offsetSec": 19.35,
+          "durationSec": 1.4,
+          "text": "Ya, kan ada yang ngerujak saya."
+        },
+        {
+          "offsetSec": 20.75,
+          "durationSec": 1.45,
+          "text": "Saya ingat ya, saya masih dendam ya."
+        },
+        {
+          "offsetSec": 22.2,
+          "durationSec": 1.95,
+          "text": "6 bulan lalu anda membuat saya viral gara-gara."
+        },
+        {
+          "offsetSec": 24.53,
+          "durationSec": 0.5,
+          "text": "Lagi apa?"
+        },
+        {
+          "offsetSec": 25.05,
+          "durationSec": 1.95,
+          "text": "Liverpool. Saya bilang apa?"
+        },
+        {
+          "offsetSec": 27.42,
+          "durationSec": 5.48,
+          "text": "Oh tim yang kalah sama, oh Brentford papan bawah saya ingat."
+        },
+        {
+          "offsetSec": 33.42,
+          "durationSec": 0.7,
+          "text": "Ingat dendam."
+        },
+        {
+          "offsetSec": 34.12,
+          "durationSec": 1.88,
+          "text": "Dendam, dendam lagi."
+        },
+        {
+          "offsetSec": 36,
+          "durationSec": 1.25,
+          "text": "Iya, ben dong."
+        },
+        {
+          "offsetSec": 37.25,
+          "durationSec": 1.45,
+          "text": "Garing gak saya sudah pakai kostum lebah ya."
+        },
+        {
+          "offsetSec": 38.7,
+          "durationSec": 0.72,
+          "text": "Lihat."
+        },
+        {
+          "offsetSec": 39.42,
+          "durationSec": 1.58,
+          "text": "Saya janji, saya janji satu hal."
+        },
+        {
+          "offsetSec": 41,
+          "durationSec": 2,
+          "text": "Iya, saya"
+        }
+      ],
+      "priorityLabel": "Sorotan Utama",
+      "status": "draft",
+      "publishedPlatforms": [],
+      "platformCopies": {
+        "youtube_shorts": {
+          "title": "Dendam Kesumat Dokter Tirta ke Radit!",
+          "caption": "Ternyata Dokter Tirta masih dendam sama Raditya Dika gara-gara masalah Liverpool! Ternyata kostum lebah itu ada sejarahnya ya. Siapa nih yang kalau kalah bola langsung dendam juga? Tulis di kolom komentar ya! #DokterTirta #RadityaDika #PodcastLucu #DendamKesumat #Shorts",
+          "hashtags": [
+            "#DokterTirta",
+            "#RadityaDika",
+            "#PodcastLucu",
+            "#DendamKesumat",
+            "#Shorts"
+          ]
+        },
+        "tiktok": {
+          "title": "Kena mental sama Dokter Tirta soal jam tidur",
+          "caption": "Tag teman lu yang hobi begadang tapi ngakunya sibuk kerja. Dengerin kata Dokter Tirta nih!",
+          "hashtags": [
+            "#doktertirta",
+            "#radityadika",
+            "#begadang",
+            "#tipskesehatan",
+            "#fyp"
+          ]
+        },
+        "instagram_reels": {
+          "title": "Pesan Menohok Dokter Tirta Buat Kaum Begadang",
+          "caption": "Bukan sibuk, cuma manajemen waktunya aja yang perlu dibenerin. Simpan reels ini buat pengingat tidur lebih awal malam ini!",
+          "hashtags": [
+            "#doktertirta",
+            "#radityadika",
+            "#polahidupsehat",
+            "#podcastindo",
+            "#reelsindonesia"
+          ]
+        },
+        "x_twitter": {
+          "title": "Dokter Tirta soal kebiasaan begadang",
+          "caption": "Poin penting dari Dokter Tirta: bedakan antara produktif dan merusak jam biologis. Jangan sampai tumbang sebelum target tercapai.",
+          "hashtags": [
+            "#DokterTirta",
+            "#RadityaDika",
+            "#Kesehatan"
+          ]
+        },
+        "linkedin": {
+          "title": "Mengelola Energi dan Jam Tidur untuk Produktivitas Jangka Panjang",
+          "caption": "Dalam obrolan bersama Raditya Dika, Dokter Tirta mengingatkan bahwa performa kerja yang berkelanjutan dimulai dari kualitas istirahat yang baik, bukan sekadar jam kerja yang panjang.",
+          "hashtags": [
+            "#Produktivitas",
+            "#KesehatanKerja",
+            "#WorkLifeBalance",
+            "#Leadership"
+          ]
+        }
+      },
+      "renderedClipUrl": "/api/clips/ep-1794848023564-clip-1/video?t=1795126457619",
+      "renderedLayout": "shorts_full_bleed",
+      "subtitleAccuracySource": "audio_transcribed",
+      "autoGeneratedTitle": "Dendam Kesumat Dokter Tirta ke Radit!",
+      "autoGeneratedCaption": "Ternyata Dokter Tirta masih dendam sama Raditya Dika gara-gara masalah Liverpool! Ternyata kostum lebah itu ada sejarahnya ya. Siapa nih yang kalau kalah bola langsung dendam juga? Tulis di kolom komentar ya! #DokterTirta #RadityaDika #PodcastLucu #DendamKesumat #Shorts",
+      "speakerFocusSummary": "Para pembicara berdiskusi tentang pertandingan bola dan kekalahan tim tertentu yang membuat mereka merasa kasihan.",
+      "renderedQuality": "1080p",
+      "renderedSourceWidth": 1920,
+      "renderedSourceHeight": 1080,
+      "renderedSourceType": "third_party_downloader",
+      "renderedFileSizeBytes": 27759785,
+      "emotionSummary": "Interaksi penuh komedi antara tamu dan host yang dibalut dendam lucu soal sepak bola berhasil memancing tawa penonton.",
+      "emotionMoments": [
+        {
+          "timeSec": 20.8,
+          "durationSec": 2,
+          "emotion": "funny",
+          "badgeText": "DENDAM KESUMAT",
+          "sfxStyle": "chuckle_pop",
+          "intensity": 0.8
+        },
+        {
+          "timeSec": 30.5,
+          "durationSec": 1.8,
+          "emotion": "shock",
+          "badgeText": "ROASTING TELAK",
+          "sfxStyle": "vine_boom",
+          "intensity": 0.9
+        },
+        {
+          "timeSec": 37.8,
+          "durationSec": 1.6,
+          "emotion": "funny",
+          "badgeText": "INGAT KOSTUM LEBAH",
+          "sfxStyle": "pop_spark",
+          "intensity": 0.7
+        }
+      ],
+      "emotionEffectsEnabled": true
+    },
+    {
+      "id": "ep-1794848023564-clip-2",
+      "episodeId": "ep-1794848023564",
+      "orderIndex": 2,
+      "title": "Cara Niko dan Aloy Menghadapi Hujatan Netizen",
+      "hookLine": "Kalau lu baca semua komen negatif, bisnis lu nggak bakal jalan.",
+      "startSec": 740,
+      "endSec": 785,
+      "ringkasanTeks": "Niko dan Aloy berbagi pengalaman pahit manis saat pertama kali membangun nama di media sosial dan bisnis. Mereka sepakat bahwa fokus pada karya dan pelanggan jauh lebih penting daripada meladeni komentar negatif.",
+      "poinKunci": [
+        "Mentalitas kreator dalam menyaring kritik dan hujatan",
+        "Fokus pada eksekusi bisnis daripada validasi sosial",
+        "Peran lingkaran pertemanan yang suportif"
+      ],
+      "transcriptExcerpt": "Dulu awal-awal tiap ada komen miring pasti kepikiran. Tapi lama-lama sadar, yang bayar tagihan kita bukan haters, tapi pelanggan yang percaya sama karya kita.",
+      "captionCues": [
+        {
+          "offsetSec": 0,
+          "durationSec": 9,
+          "text": "Kalau lu baca semua komen negatif, bisnis lu nggak jalan."
+        },
+        {
+          "offsetSec": 9,
+          "durationSec": 12,
+          "text": "Awalnya pasti kepikiran, tapi lama-lama harus kebal."
+        },
+        {
+          "offsetSec": 21,
+          "durationSec": 14,
+          "text": "Yang bayar tagihan bukan haters, tapi pelanggan setia."
+        },
+        {
+          "offsetSec": 35,
+          "durationSec": 10,
+          "text": "Fokus aja sama karya dan orang-orang yang dukung lu."
+        }
+      ],
+      "priorityLabel": "Klip Pendukung",
+      "status": "draft",
+      "publishedPlatforms": [],
+      "platformCopies": {
+        "youtube_shorts": {
+          "title": "Mental Baja Hadapi Haters Ala Niko & Aloy #Shorts",
+          "caption": "Sering down gara-gara komentar orang? Simak cara Niko dan Aloy tetap fokus berkarya di podcast Raditya Dika. #Shorts #Bisnis #Kreator",
+          "hashtags": [
+            "#Shorts",
+            "#RadityaDika",
+            "#MentalBisnis",
+            "#KontenKreator",
+            "#Motivasi"
+          ]
+        },
+        "tiktok": {
+          "title": "Cara elegan hadapi komentar negatif netizen",
+          "caption": "Ingat, yang bayar tagihan lu bukan haters. Terus jalan dan fokus sama tujuan lu!",
+          "hashtags": [
+            "#mindsetbisnis",
+            "#radityadika",
+            "#kontenkreator",
+            "#motivasi",
+            "#fyp"
+          ]
+        },
+        "instagram_reels": {
+          "title": "Jangan Biarkan Komentar Negatif Menghentikan Langkahmu",
+          "caption": "Pelajaran berharga dari obrolan santai tapi dalam bareng Raditya Dika. Fokus pada mereka yang menghargai prosesmu.",
+          "hashtags": [
+            "#mindset",
+            "#bisnisonline",
+            "#radityadika",
+            "#reelsmotivasi",
+            "#kreatorindonesia"
+          ]
+        },
+        "x_twitter": {
+          "title": "Fokus pada pelanggan, bukan haters",
+          "caption": "Insight menarik dari obrolan Raditya Dika: energi kita terbatas, gunakan hanya untuk melayani pelanggan dan mengembangkan karya.",
+          "hashtags": [
+            "#Bisnis",
+            "#Mindset",
+            "#RadityaDika"
+          ]
+        },
+        "linkedin": {
+          "title": "Membangun Resiliensi Mental di Era Transparansi Digital",
+          "caption": "Kritik publik adalah konsekuensi dari visibilitas. Kunci bertumbuh adalah memisahkan masukan konstruktif dari sekadar kebisingan, lalu tetap fokus pada nilai yang kita berikan kepada klien.",
+          "hashtags": [
+            "#Resiliensi",
+            "#PersonalBranding",
+            "#Bisnis",
+            "#Entrepreneurship"
+          ]
+        }
+      },
+      "renderedClipUrl": "/api/clips/ep-1794848023564-clip-2/video?t=1794850778625",
+      "renderedLayout": "vertical_9_16"
+    },
+    {
+      "id": "ep-1794848023564-clip-3",
+      "episodeId": "ep-1794848023564",
+      "orderIndex": 3,
+      "title": "Raditya Dika Bongkar Rahasia Kolaborasi Bisnis Bareng Teman",
+      "hookLine": "Bisnis sama teman itu enak di awal, tapi harus jelas hitam di atas putih.",
+      "startSec": 1280,
+      "endSec": 1322,
+      "ringkasanTeks": "Raditya Dika, Dokter Tirta, Aloy, dan Niko membahas aturan main saat membangun usaha bersama sahabat dekat. Mereka menekankan pentingnya profesionalisme dan kejelasan pembagian peran sejak hari pertama.",
+      "poinKunci": [
+        "Pentingnya perjanjian tertulis meski dengan teman dekat",
+        "Memisahkan urusan personal dan profesional",
+        "Komunikasi terbuka saat terjadi perbedaan visi"
+      ],
+      "transcriptExcerpt": "Justru karena kita temenan, perjanjian tertulis itu wajib. Bukan karena nggak percaya, tapi biar pertemanan kita tetap awet kalau nanti ada masalah bisnis.",
+      "captionCues": [
+        {
+          "offsetSec": 0,
+          "durationSec": 10,
+          "text": "Bisnis sama teman itu harus jelas hitam di atas putih."
+        },
+        {
+          "offsetSec": 10,
+          "durationSec": 11,
+          "text": "Bukan karena nggak percaya, tapi buat jaga pertemanan."
+        },
+        {
+          "offsetSec": 21,
+          "durationSec": 12,
+          "text": "Pisahkan mana urusan nongkrong, mana urusan profesional."
+        },
+        {
+          "offsetSec": 33,
+          "durationSec": 9,
+          "text": "Setuju? Share ke partner bisnis kamu sekarang!"
+        }
+      ],
+      "priorityLabel": "Klip Pendukung",
+      "status": "draft",
+      "publishedPlatforms": [],
+      "platformCopies": {
+        "youtube_shorts": {
+          "title": "Aturan Wajib Bisnis Bareng Teman! #Shorts",
+          "caption": "Mau buka usaha bareng sahabat? Dengerin dulu obrolan penting Raditya Dika, Dokter Tirta, Aloy, dan Niko biar nggak berantem di tengah jalan. #Shorts #Bisnis",
+          "hashtags": [
+            "#Shorts",
+            "#BisnisBarengTeman",
+            "#RadityaDika",
+            "#DokterTirta",
+            "#TipsBisnis"
+          ]
+        },
+        "tiktok": {
+          "title": "Jangan mulai bisnis sama teman sebelum tahu ini",
+          "caption": "Hitam di atas putih itu bukan tanda nggak percaya, tapi cara terbaik menjaga persahabatan.",
+          "hashtags": [
+            "#tipsbisnis",
+            "#bisnisbarengteman",
+            "#radityadika",
+            "#doktertirta",
+            "#fyp"
+          ]
+        },
+        "instagram_reels": {
+          "title": "Kunci Awet Bisnis Bareng Sahabat",
+          "caption": "Banyak pertemanan hancur gara-gara bisnis yang nggak jelas aturannya. Pastikan pembagian tugas dan komitmen tertulis sejak awal!",
+          "hashtags": [
+            "#tipsbisnis",
+            "#entrepreneurindonesia",
+            "#radityadika",
+            "#kolaborasi",
+            "#reelsbisnis"
+          ]
+        },
+        "x_twitter": {
+          "title": "Aturan main bisnis bareng teman",
+          "caption": "Perjanjian tertulis saat berbisnis dengan teman bukan soal kurang percaya, melainkan bentuk perlindungan bagi bisnis dan persahabatan itu sendiri.",
+          "hashtags": [
+            "#TipsBisnis",
+            "#Entrepreneur",
+            "#RadityaDika"
+          ]
+        },
+        "linkedin": {
+          "title": "Menjaga Profesionalisme dan Persahabatan dalam Kemitraan Bisnis",
+          "caption": "Membangun usaha bersama rekan dekat membutuhkan batas yang tegas. Kontrak kerja sama yang jelas sejak awal adalah fondasi agar hubungan personal tetap harmonis di tengah dinamika bisnis.",
+          "hashtags": [
+            "#BusinessPartnership",
+            "#Entrepreneurship",
+            "#ManajemenBisnis",
+            "#Profesionalisme"
+          ]
+        }
+      }
+    },
+    {
+      "id": "clip-seed-1",
+      "episodeId": "ep-seed-1",
+      "orderIndex": 1,
+      "title": "Aturan 3 Detik: Kenapa Pembukaan Podcast Sering Gagal di Shorts",
+      "hookLine": "Jangan mulai klip podcast dengan sapaan pembuka — mulai langsung dari pernyataan paling tajam.",
+      "startSec": 412,
+      "endSec": 458,
+      "ringkasanTeks": "Mayoritas klip podcast kehilangan 65% penonton di tiga detik awal karena masih membawa sapaan \"halo semuanya\". Memotong langsung ke kalimat konflik atau angka mengejutkan membuat algoritma Shorts mendorong distribusi lebih luas.",
+      "poinKunci": [
+        "Buang basa-basi intro dan langsung masuk ke premis inti",
+        "Gunakan subtitle kata-per-frasa di area aman tengah layar 9:16",
+        "Jaga durasi optimal antara 35 hingga 50 detik untuk loop tonton ulang"
+      ],
+      "transcriptExcerpt": "Kesalahan terbesar tim clipping adalah memotong dari awal topik, bukan dari puncak ketegangannya. Penonton Shorts tidak menunggu konteks lima belas detik; mereka memutuskan bertahan atau geser dalam tiga detik pertama.",
+      "captionCues": [
+        {
+          "offsetSec": 0,
+          "durationSec": 4.5,
+          "text": "Kesalahan terbesar tim clipping adalah memotong dari awal topik,"
+        },
+        {
+          "offsetSec": 4.5,
+          "durationSec": 4.5,
+          "text": "bukan langsung dari puncak ketegangannya."
+        },
+        {
+          "offsetSec": 9,
+          "durationSec": 5,
+          "text": "Penonton Shorts memutuskan bertahan atau geser"
+        },
+        {
+          "offsetSec": 14,
+          "durationSec": 4,
+          "text": "hanya dalam tiga detik pertama."
+        }
+      ],
+      "priorityLabel": "Sorotan Utama",
+      "status": "draft",
+      "publishedPlatforms": [],
+      "platformCopies": {
+        "youtube_shorts": {
+          "title": "Jangan Mulai Klip Podcast Seperti Ini! #Shorts",
+          "caption": "Ringkasan klip: Kenapa 3 detik pertama menentukan performa YouTube Shorts dari podcast panjang. Simpan untuk referensi produksi kontenmu.",
+          "hashtags": [
+            "#Shorts",
+            "#PodcastIndonesia",
+            "#TipsKonten"
+          ]
+        },
+        "tiktok": {
+          "title": "Aturan 3 Detik Klip Podcast",
+          "caption": "Banyak editor masih potong dari intro sapaan. Coba mulai langsung dari kalimat paling kontras di menit tengah.",
+          "hashtags": [
+            "#podcastclips",
+            "#contentcreator",
+            "#editingtips"
+          ]
+        },
+        "instagram_reels": {
+          "title": "Framework Potong Podcast Jadi Reels",
+          "caption": "Tiga detik pertama menentukan retensi. Cek ringkasan poin kuncinya dan terapkan di episode berikutnya.",
+          "hashtags": [
+            "#reelsindonesia",
+            "#podcast",
+            "#strategikonten"
+          ]
+        },
+        "x_twitter": {
+          "title": "Pelajaran cepat soal retensi klip podcast",
+          "caption": "Penonton video pendek tidak menunggu konteks 15 detik. Mulai potongan tepat di kalimat tesis atau pertanyaan paling tajam.",
+          "hashtags": [
+            "#Podcast",
+            "#CreatorEconomy"
+          ]
+        },
+        "linkedin": {
+          "title": "Mengoptimalkan Distribusi Podcast B2B lewat Klip Vertikal",
+          "caption": "Mengubah satu episode podcast berdurasi 45 menit menjadi 4 klip terfokus dapat memperluas jangkauan organik di YouTube Shorts dan media sosial profesional.",
+          "hashtags": [
+            "#ContentMarketing",
+            "#PodcastStrategy",
+            "#VideoMarketing"
+          ]
+        }
+      }
+    },
+    {
+      "id": "clip-seed-2",
+      "episodeId": "ep-seed-1",
+      "orderIndex": 2,
+      "title": "Workflow 1 Episode Podcast Jadi 5 Konten Lintas Platform",
+      "hookLine": "Satu percakapan mendalam seharusnya cukup menghidupi kalender konten selama seminggu penuh.",
+      "startSec": 1180,
+      "endSec": 1222,
+      "ringkasanTeks": "Alih-alih memproduksi konten terpisah untuk setiap media sosial, satu rekaman podcast dapat dipecah menjadi video vertikal untuk Shorts/Reels/TikTok dan ringkasan teks terstruktur untuk X serta LinkedIn.",
+      "poinKunci": [
+        "Tandai momen dengan perubahan intonasi atau tawa spontan",
+        "Sesuaikan gaya caption: lugas di X, naratif di LinkedIn, hook cepat di Shorts"
+      ],
+      "transcriptExcerpt": "Satu episode berdurasi satu jam punya minimal empat argumen yang berdiri sendiri. Ketika dipotong lengkap dengan ringkasan teksnya, distribusi ke lima platform bisa berjalan otomatis dalam hitungan menit.",
+      "captionCues": [
+        {
+          "offsetSec": 0,
+          "durationSec": 4.5,
+          "text": "Satu episode berdurasi satu jam punya minimal empat argumen,"
+        },
+        {
+          "offsetSec": 4.5,
+          "durationSec": 4.5,
+          "text": "yang bisa berdiri sendiri sebagai klip pendek."
+        },
+        {
+          "offsetSec": 9,
+          "durationSec": 5,
+          "text": "Dengan ringkasan teks otomatis, distribusi ke lima platform"
+        },
+        {
+          "offsetSec": 14,
+          "durationSec": 4,
+          "text": "bisa selesai dalam hitungan menit."
+        }
+      ],
+      "priorityLabel": "Sorotan Utama",
+      "status": "published_manual",
+      "publishedPlatforms": [
+        "youtube_shorts",
+        "x_twitter"
+      ],
+      "lastPublishedAt": "2026-11-16T07:45:00.000Z",
+      "platformCopies": {
+        "youtube_shorts": {
+          "title": "1 Podcast = 5 Konten Sosmed Otomatis #Shorts",
+          "caption": "Cara memecah satu rekaman podcast menjadi beberapa YouTube Shorts dan utas ringkasan tanpa mengulang rekaman.",
+          "hashtags": [
+            "#Shorts",
+            "#WorkflowKreator",
+            "#Podcast"
+          ]
+        },
+        "tiktok": {
+          "title": "Workflow Konten 1 Jam Jadi Seminggu",
+          "caption": "Rekam sekali, potong momen terbaiknya, lalu sebar ke semua kanal.",
+          "hashtags": [
+            "#workflow",
+            "#kreatorindonesia",
+            "#podcast"
+          ]
+        },
+        "instagram_reels": {
+          "title": "Sistem Repurpose Podcast",
+          "caption": "Berhenti bikin konten dari nol setiap hari. Maksimalkan arsip podcastmu.",
+          "hashtags": [
+            "#repurposecontent",
+            "#reels",
+            "#kreator"
+          ]
+        },
+        "x_twitter": {
+          "title": "1 podcast 60 menit = 4 klip + 1 ringkasan teks",
+          "caption": "Kunci konsistensi bukan merekam lebih sering, tapi sistem kliping dan distribusi lintas platform yang rapi.",
+          "hashtags": [
+            "#ContentOps",
+            "#Podcast"
+          ]
+        },
+        "linkedin": {
+          "title": "Efisiensi Produksi Konten Tim Media dengan Kliping Otomatis",
+          "caption": "Dengan mengekstrak momen inti dan ringkasan teks secara sistematis, satu sesi wawancara eksekutif mampu mengisi seluruh kanal distribusi mingguan.",
+          "hashtags": [
+            "#MediaProduction",
+            "#B2BMarketing"
+          ]
+        }
+      }
+    },
+    {
+      "id": "clip-seed-3",
+      "episodeId": "ep-seed-1",
+      "orderIndex": 3,
+      "title": "Kapan Harus Auto-Post dan Kapan Perlu Kurasi Manual",
+      "hookLine": "Otomatisasi mempercepat volume, tapi kurasi manual menjaga kualitas judul dan konteks sensitif.",
+      "startSec": 1945,
+      "endSec": 1983,
+      "ringkasanTeks": "Sistem bot clipper paling efektif menggabungkan pemotongan otomatis dengan opsi tinjauan cepat sebelum publikasi ke YouTube Shorts untuk topik teknis atau opini yang membutuhkan konteks akurat.",
+      "poinKunci": [
+        "Gunakan Auto-Post untuk klip tips ringan dan kutipan inspiratif",
+        "Pilih Manual Review untuk topik sensitif atau butuh penyesuaian frame trim"
+      ],
+      "transcriptExcerpt": "Bot tidak seharusnya menggantikan selera editorial sepenuhnya. Biarkan sistem menemukan timestamp terbaik dan menyusun ringkasannya, lalu kreator memilih: langsung auto-post atau tinjau manual 30 detik sebelum naik ke Shorts.",
+      "captionCues": [
+        {
+          "offsetSec": 0,
+          "durationSec": 4.5,
+          "text": "Biarkan bot menemukan timestamp terbaik dan menyusun ringkasannya,"
+        },
+        {
+          "offsetSec": 4.5,
+          "durationSec": 4.5,
+          "text": "lalu kreator cukup memilih antara langsung auto-post"
+        },
+        {
+          "offsetSec": 9,
+          "durationSec": 4,
+          "text": "atau tinjau manual 30 detik sebelum naik ke Shorts."
+        }
+      ],
+      "priorityLabel": "Klip Pendukung",
+      "status": "draft",
+      "publishedPlatforms": [],
+      "platformCopies": {
+        "youtube_shorts": {
+          "title": "Auto-Post vs Manual Review YouTube Shorts #Shorts",
+          "caption": "Kapan waktu terbaik memakai publikasi otomatis dan kapan sebaiknya tinjau manual sebelum unggah ke Shorts.",
+          "hashtags": [
+            "#Shorts",
+            "#YouTubeShorts",
+            "#Automation"
+          ]
+        },
+        "tiktok": {
+          "title": "Auto-Post atau Manual Review?",
+          "caption": "Kombinasi AI clipper + sentuhan editorial tetap paling aman.",
+          "hashtags": [
+            "#aicreator",
+            "#podcastclips",
+            "#tiktoktips"
+          ]
+        },
+        "instagram_reels": {
+          "title": "Menjaga Kualitas Klip Otomatis",
+          "caption": "Kecepatan otomatisasi bertemu kontrol editorial.",
+          "hashtags": [
+            "#instagramreels",
+            "#editorial",
+            "#podcast"
+          ]
+        },
+        "x_twitter": {
+          "title": "Otomatisasi + Kurasi Manual",
+          "caption": "Biarkan bot potong dan ringkas, manusia pegang kendali akhir sebelum tayang ke YouTube Shorts.",
+          "hashtags": [
+            "#AIWorkflow",
+            "#YouTubeShorts"
+          ]
+        },
+        "linkedin": {
+          "title": "Human-in-the-Loop dalam Otomatisasi Distribusi Video",
+          "caption": "Menyeimbangkan kecepatan publikasi otomatis dan akurasi pesan merek pada kanal video pendek.",
+          "hashtags": [
+            "#DigitalStrategy",
+            "#Automation"
+          ]
+        }
+      }
+    }
+  ],
+  "distributionLogs": [
+    {
+      "id": "log-seed-1",
+      "clipId": "clip-seed-2",
+      "clipTitle": "Workflow 1 Episode Podcast Jadi 5 Konten Lintas Platform",
+      "episodeTitle": "Strategi Konten Podcast: Mengubah Diskusi 90 Menit Menjadi Klip Shorts Berdampak",
+      "mode": "manual",
+      "platforms": [
+        "youtube_shorts",
+        "x_twitter"
+      ],
+      "webhookDelivered": false,
+      "status": "success",
+      "message": "Paket Shorts (.srt & metadata) diekspor untuk unggah manual dan dibagikan ke X.",
+      "timestamp": "2026-11-16T07:45:00.000Z"
+    }
+  ],
+  "automation": {
+    "autoPostOnAnalyze": false,
+    "defaultPlatforms": [
+      "youtube_shorts",
+      "tiktok",
+      "instagram_reels",
+      "x_twitter",
+      "linkedin"
+    ],
+    "minClipSec": 25,
+    "maxClipSec": 55,
+    "targetClipCount": 3,
+    "youtubeDefaultVisibility": "public",
+    "webhookUrl": "",
+    "webhookSecretHeader": "",
+    "autoAddHashtagShorts": true,
+    "enableUltraHdRender": true,
+    "defaultRenderQuality": "4k",
+    "defaultRenderLayout": "shorts_full_bleed",
+    "enableAiEmotionEffects": true
+  }
+}

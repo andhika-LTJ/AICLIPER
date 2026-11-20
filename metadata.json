@@ -1,0 +1,8 @@
+{
+  "name": "KlipCast",
+  "description": "Bot kliping podcast YouTube otomatis dengan ringkasan teks AI, studio pratinjau Shorts 9:16, serta publikasi otomatis & manual ke YouTube Shorts dan media sosial.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

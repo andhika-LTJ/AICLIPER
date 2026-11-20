@@ -1,0 +1,39 @@
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 1280
+PlayResY: 720
+WrapStyle: 1
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: ChannelTag,DejaVu Sans,15,&H00FFFFFF,&H000000FF,&H001C1CDC,&HFF1C1CDC,1,0,0,0,100,100,0.5,0,3,7,0,7,28,28,18,1
+Style: TitleCard,DejaVu Sans,23,&H00F8FAFC,&H000000FF,&H00090D16,&HDD090D16,1,0,0,0,100,100,0,0,1,2.5,1,9,350,28,14,1
+Style: SubtitleBox,DejaVu Sans,32,&H00FFFFFF,&H0000D7FF,&H00090D16,&HE0090D16,1,0,0,0,100,100,0,0,3,12,0,2,140,140,84,1
+Style: HookFooter,DejaVu Sans,17,&H00E2E8F0,&H000000FF,&H00090D16,&HCC090D16,0,0,0,0,100,100,0,0,1,2,0,2,40,40,16,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 1,0:00:00.00,0:00:43.00,ChannelTag,,0,0,0,,  RADITYA DIKA · AUTO CLIP  
+Dialogue: 1,0:00:00.00,0:00:43.00,TitleCard,,0,0,0,,Dokter Tirta Curhat Dendam Masa Lalu!
+Dialogue: 1,0:00:00.00,0:00:43.00,HookFooter,,0,0,0,,Ternyata Dokter Tirta masih dendam sama kejadian 6 bulan lalu! Siapa nih yang ikut ngerujak
+Dialogue: 2,0:00:00.00,0:00:00.50,SubtitleBox,,0,0,0,,tim bola.
+Dialogue: 2,0:00:00.50,0:00:01.20,SubtitleBox,,0,0,0,,{\c&H0038BDF8&}Saya{\c&H00FFFFFF&} juga kok.
+Dialogue: 2,0:00:01.20,0:00:03.10,SubtitleBox,,0,0,0,,Oh ya? Lah lu {\c&H0038BDF8&}doang{\c&H00FFFFFF&} yang.
+Dialogue: 2,0:00:03.40,0:00:04.50,SubtitleBox,,0,0,0,,{\c&H0038BDF8&}Padahal{\c&H00FFFFFF&} pas. Iya.
+Dialogue: 2,0:00:04.50,0:00:09.40,SubtitleBox,,0,0,0,,Oke saya juga pas {\c&H0038BDF8&}terakhir{\c&H00FFFFFF&} ngikutin ada orang kemarin kayaknya kalah 4-1 kayaknya.
+Dialogue: 2,0:00:09.40,0:00:10.30,SubtitleBox,,0,0,0,,4-1 {\c&H0038BDF8&}Kasian{\c&H00FFFFFF&} ya.
+Dialogue: 2,0:00:10.30,0:00:11.70,SubtitleBox,,0,0,0,,{\c&H0038BDF8&}tetangga{\c&H00FFFFFF&} tapi saya nggak mau bahas karena kasihan.
+Dialogue: 2,0:00:11.70,0:00:12.20,SubtitleBox,,0,0,0,,Kasian itu.
+Dialogue: 2,0:00:12.20,0:00:14.50,SubtitleBox,,0,0,0,,Ya namanya juga kan {\c&H0038BDF8&}pertandingan{\c&H00FFFFFF&} bola.
+Dialogue: 2,0:00:14.50,0:00:16.00,SubtitleBox,,0,0,0,,Betul {\c&H0038BDF8&}kadang{\c&H00FFFFFF&} menang,
+Dialogue: 2,0:00:16.00,0:00:18.20,SubtitleBox,,0,0,0,,kadang kalah. Ya kan {\c&H0038BDF8&}Liverpool{\c&H00FFFFFF&} juga pernah ngalamin itu.
+Dialogue: 2,0:00:18.20,0:00:20.30,SubtitleBox,,0,0,0,,Ya kan ada yang {\c&H0038BDF8&}ngerujak{\c&H00FFFFFF&} saya, saya ingat ya.
+Dialogue: 2,0:00:20.30,0:00:24.80,SubtitleBox,,0,0,0,,Saya masih dendam ya. 6 bulan lalu Anda membuat saya viral {\c&H0038BDF8&}gara-gara{\c&H00FFFFFF&} kayak gitu.
+Dialogue: 2,0:00:24.80,0:00:25.60,SubtitleBox,,0,0,0,,Liverpool.
+Dialogue: 2,0:00:25.60,0:00:26.80,SubtitleBox,,0,0,0,,Saya {\c&H0038BDF8&}bilang{\c&H00FFFFFF&} apa?
+Dialogue: 2,0:00:26.80,0:00:28.00,SubtitleBox,,0,0,0,,Ngecek.
+Dialogue: 2,0:00:28.00,0:00:33.10,SubtitleBox,,0,0,0,,Oh tim yang kalah sama oh {\c&H0038BDF8&}Brentford{\c&H00FFFFFF&} papan bawah saya ingat.
+Dialogue: 2,0:00:33.10,0:00:34.20,SubtitleBox,,0,0,0,,Ingat dendam.
+Dialogue: 2,0:00:34.20,0:00:37.00,SubtitleBox,,0,0,0,,Saya ingat ya. {\c&H0038BDF8&}Dendam.{\c&H00FFFFFF&} Dendam man juga ya.
+Dialogue: 2,0:00:37.00,0:00:39.60,SubtitleBox,,0,0,0,,Iya, {\c&H0038BDF8&}dendam.{\c&H00FFFFFF&} Saya ingat saya sudah pakai kostum lebah ya.
+Dialogue: 2,0:00:39.60,0:00:43.00,SubtitleBox,,0,0,0,,{\c&H0038BDF8&}Lihat,{\c&H00FFFFFF&} saya janji, saya janji satu hal.
