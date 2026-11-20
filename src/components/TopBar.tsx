@@ -1,5 +1,5 @@
 import type { User } from 'firebase/auth';
-import { Scissors } from 'lucide-react';
+import { LogOut, Scissors } from 'lucide-react';
 import { GoogleAccountBadge, GoogleSignInButton } from './GoogleSignInButton';
 
 export type NavSection = 'studio' | 'summaries' | 'queue' | 'automation';
@@ -9,7 +9,7 @@ interface TopBarProps {
   onNavigate: (section: NavSection) => void;
   onStartNewLink: () => void;
   youtubeUser: User | null;
-  hasYouTubeToken: boolean;
+  isGoogleVerified: boolean;
   isSigningInGoogle: boolean;
   onGoogleSignIn: () => void;
   onGoogleSignOut: () => void;
@@ -27,14 +27,14 @@ export function TopBar({
   onNavigate,
   onStartNewLink,
   youtubeUser,
-  hasYouTubeToken,
+  isGoogleVerified,
   isSigningInGoogle,
   onGoogleSignIn,
   onGoogleSignOut,
 }: TopBarProps) {
   return (
     <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-sm border-b border-slate-200">
-      <div className="max-w-[1440px] mx-auto px-4 sm:px-8 h-16 flex items-center justify-between gap-4 sm:gap-6">
+      <div className="max-w-[1440px] mx-auto px-4 sm:px-8 h-16 flex items-center justify-between gap-3 sm:gap-6">
         {/* Zone 1: Single text element wordmark */}
         <button
           type="button"
@@ -75,20 +75,31 @@ export function TopBar({
           })}
         </nav>
 
-        {/* Zone 3: YouTube Google Auth & Primary Action */}
-        <div className="shrink-0 hidden sm:flex items-center gap-2.5">
-          {youtubeUser && hasYouTubeToken ? (
-            <div className="hidden lg:block">
-              <GoogleAccountBadge
-                displayName={youtubeUser.displayName}
-                email={youtubeUser.email}
-                photoUrl={youtubeUser.photoURL}
-                onSignOut={onGoogleSignOut}
-                compact
-              />
-            </div>
+        {/* Zone 3: Verified Google Account & Primary Action */}
+        <div className="shrink-0 flex items-center gap-2.5">
+          {youtubeUser ? (
+            <>
+              <div className="hidden sm:block">
+                <GoogleAccountBadge
+                  displayName={youtubeUser.displayName}
+                  email={youtubeUser.email}
+                  photoUrl={youtubeUser.photoURL}
+                  verified={isGoogleVerified}
+                  onSignOut={onGoogleSignOut}
+                  compact
+                />
+              </div>
+              <button
+                type="button"
+                onClick={onGoogleSignOut}
+                aria-label="Keluar dari akun Google"
+                className="sm:hidden p-2 text-slate-600 hover:text-red-600 border border-slate-200 rounded-lg cursor-pointer"
+              >
+                <LogOut className="w-4 h-4" aria-hidden="true" />
+              </button>
+            </>
           ) : (
-            <div className="hidden lg:block">
+            <div className="hidden md:block">
               <GoogleSignInButton
                 onClick={onGoogleSignIn}
                 isLoading={isSigningInGoogle}
@@ -100,7 +111,7 @@ export function TopBar({
           <button
             type="button"
             onClick={onStartNewLink}
-            className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-red-600 hover:bg-red-700 rounded-lg studio-transition whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-600"
+            className="hidden sm:inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-red-600 hover:bg-red-700 rounded-lg studio-transition whitespace-nowrap shrink-0 cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-600"
           >
             <Scissors className="w-4 h-4" aria-hidden="true" />
             <span>Proses Link Baru</span>

@@ -10,6 +10,7 @@ import { ShortsPreviewStage } from './components/ShortsPreviewStage';
 import { SummaryArchiveView } from './components/SummaryArchiveView';
 import { TopBar, type NavSection } from './components/TopBar';
 import { YouTubeDirectUploadModal } from './components/YouTubeDirectUploadModal';
+import { GoogleLoginGate } from './components/GoogleLoginGate';
 import { INITIAL_STUDIO_STATE } from './data/seedPodcasts';
 import type {
   BotAutomationConfig,
@@ -21,9 +22,10 @@ import { PLATFORM_LABELS } from './utils/youtube';
 import {
   clearYouTubeAccessToken,
   getYouTubeAccessToken,
-  initYouTubeAuth,
-  signInWithGoogleForYouTube,
-  signOutYouTube,
+  initGoogleSessionListener,
+  signInWithGoogleSession,
+  signOutGoogleSession,
+  type VerifiedGoogleIdentity,
 } from './utils/youtubeAuth';
 import type { YouTubePrivacyStatus } from '../server/youtubeUploader';
 
@@ -47,31 +49,46 @@ export default function App() {
   } | null>(null);
   const [isManualModalOpen, setIsManualModalOpen] = useState(false);
 
-  // Client-side Google Auth for YouTube Shorts direct upload (access token stays in memory only)
+  // Google Identity & server verification gate + in-memory YouTube upload OAuth token
+  const [isCheckingGoogleSession, setIsCheckingGoogleSession] = useState(true);
   const [youtubeUser, setYoutubeUser] = useState<User | null>(null);
+  const [verifiedIdentity, setVerifiedIdentity] = useState<VerifiedGoogleIdentity | null>(null);
   const [youtubeAccessToken, setYoutubeAccessToken] = useState<string | null>(() =>
     getYouTubeAccessToken()
   );
   const [isSigningInGoogle, setIsSigningInGoogle] = useState(false);
+  const [googleAuthPhase, setGoogleAuthPhase] = useState<'idle' | 'popup' | 'verifying'>('idle');
   const [googleAuthError, setGoogleAuthError] = useState<string | null>(null);
   const [isYouTubeUploadModalOpen, setIsYouTubeUploadModalOpen] = useState(false);
   const [isUploadingYouTube, setIsUploadingYouTube] = useState(false);
   const [youTubeUploadError, setYouTubeUploadError] = useState<string | null>(null);
 
+  const isPreviewAutostart =
+    typeof window !== 'undefined' &&
+    new URLSearchParams(window.location.search).get('autostart') === '1';
+
   const urlInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
-    const unsubscribe = initYouTubeAuth(
-      (user, token) => {
+    const unsubscribe = initGoogleSessionListener({
+      onSessionRestored: (user, identity, accessToken) => {
         setYoutubeUser(user);
-        setYoutubeAccessToken(token);
+        setVerifiedIdentity(identity);
+        setYoutubeAccessToken(accessToken);
         setGoogleAuthError(null);
+        setIsCheckingGoogleSession(false);
       },
-      (user) => {
-        setYoutubeUser(user);
+      onSessionError: (message) => {
+        setGoogleAuthError(message);
+        setIsCheckingGoogleSession(false);
+      },
+      onSignedOut: () => {
+        setYoutubeUser(null);
+        setVerifiedIdentity(null);
         setYoutubeAccessToken(null);
-      }
-    );
+        setIsCheckingGoogleSession(false);
+      },
+    });
     return unsubscribe;
   }, []);
 
@@ -267,27 +284,38 @@ export default function App() {
     setActiveSection('studio');
   };
 
-  const handleGoogleSignIn = async () => {
+  const handleGoogleSignIn = async (requireYouTubeAccessToken = false) => {
     setIsSigningInGoogle(true);
+    setGoogleAuthPhase('popup');
     setGoogleAuthError(null);
     try {
-      const session = await signInWithGoogleForYouTube();
+      const session = await signInWithGoogleSession({
+        requireYouTubeAccessToken,
+        onPhaseChange: (phase) => setGoogleAuthPhase(phase),
+      });
       setYoutubeUser(session.user);
+      setVerifiedIdentity(session.verifiedIdentity);
       setYoutubeAccessToken(session.accessToken);
+      setIsCheckingGoogleSession(false);
     } catch (err) {
       const msg =
-        err instanceof Error ? err.message : 'Gagal masuk dengan Google. Pastikan popup tidak diblokir browser.';
+        err instanceof Error
+          ? err.message
+          : 'Gagal masuk dengan Google. Pastikan popup tidak diblokir browser.';
       setGoogleAuthError(msg);
     } finally {
       setIsSigningInGoogle(false);
+      setGoogleAuthPhase('idle');
     }
   };
 
   const handleGoogleSignOut = async () => {
-    await signOutYouTube();
+    await signOutGoogleSession();
     setYoutubeUser(null);
+    setVerifiedIdentity(null);
     setYoutubeAccessToken(null);
     setGoogleAuthError(null);
+    setIsYouTubeUploadModalOpen(false);
   };
 
   const handleOpenYouTubeDirectUpload = () => {
@@ -353,6 +381,20 @@ export default function App() {
     }
   };
 
+  const isAuthenticatedWithGoogle = Boolean(youtubeUser && verifiedIdentity);
+
+  if (!isPreviewAutostart && (isCheckingGoogleSession || !isAuthenticatedWithGoogle)) {
+    return (
+      <GoogleLoginGate
+        isCheckingSession={isCheckingGoogleSession}
+        isSigningIn={isSigningInGoogle}
+        authPhase={googleAuthPhase}
+        errorMessage={googleAuthError}
+        onGoogleSignIn={() => void handleGoogleSignIn(false)}
+      />
+    );
+  }
+
   return (
     <div className="min-h-screen flex flex-col bg-slate-50 text-slate-900">
       <TopBar
@@ -360,9 +402,9 @@ export default function App() {
         onNavigate={setActiveSection}
         onStartNewLink={handleStartNewLink}
         youtubeUser={youtubeUser}
-        hasYouTubeToken={Boolean(youtubeAccessToken)}
+        isGoogleVerified={Boolean(verifiedIdentity)}
         isSigningInGoogle={isSigningInGoogle}
-        onGoogleSignIn={() => void handleGoogleSignIn()}
+        onGoogleSignIn={() => void handleGoogleSignIn(false)}
         onGoogleSignOut={() => void handleGoogleSignOut()}
       />
 
@@ -443,7 +485,7 @@ export default function App() {
                   hasYouTubeToken={Boolean(youtubeAccessToken)}
                   isSigningInGoogle={isSigningInGoogle}
                   googleAuthError={googleAuthError}
-                  onGoogleSignIn={() => void handleGoogleSignIn()}
+                  onGoogleSignIn={() => void handleGoogleSignIn(true)}
                   onGoogleSignOut={() => void handleGoogleSignOut()}
                   onOpenYouTubeDirectUpload={handleOpenYouTubeDirectUpload}
                   onUpdateClip={handleUpdateClip}

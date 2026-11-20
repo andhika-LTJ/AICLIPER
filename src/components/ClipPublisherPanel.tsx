@@ -419,15 +419,17 @@ export function ClipPublisherPanel({
                 <span>Upload Langsung ke Channel YouTube (Login Google)</span>
               </div>
               <p className="text-[11px] text-slate-500 mt-0.5 leading-relaxed">
-                Masuk dengan akun Google Anda hanya untuk mengunggah video klip .MP4 langsung ke
-                YouTube Shorts dengan konfirmasi terlebih dahulu.
+                {youtubeUser && !hasYouTubeToken
+                  ? 'Akun Google Anda sudah terverifikasi. Klik sekali untuk menyegarkan izin unggah YouTube pada sesi browser ini.'
+                  : 'Unggah video klip .MP4 langsung ke YouTube Shorts memakai akun Google Anda dengan konfirmasi terlebih dahulu.'}
               </p>
             </div>
-            {youtubeUser && hasYouTubeToken && (
+            {youtubeUser && (
               <GoogleAccountBadge
                 displayName={youtubeUser.displayName}
                 email={youtubeUser.email}
                 photoUrl={youtubeUser.photoURL}
+                verified
                 onSignOut={onGoogleSignOut}
               />
             )}
@@ -456,6 +458,11 @@ export function ClipPublisherPanel({
               <GoogleSignInButton
                 onClick={onGoogleSignIn}
                 isLoading={isSigningInGoogle}
+                label={
+                  youtubeUser
+                    ? 'Aktifkan Izin Upload YouTube'
+                    : 'Sign in with Google'
+                }
               />
             )}
 

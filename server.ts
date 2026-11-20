@@ -39,6 +39,10 @@ import {
   YouTubeUploadHttpError,
   type YouTubePrivacyStatus,
 } from './server/youtubeUploader.ts';
+import {
+  GoogleTokenVerificationError,
+  verifyFirebaseGoogleIdToken,
+} from './server/googleAuthVerifier.ts';
 
 async function startServer() {
   const app = express();
@@ -48,6 +52,38 @@ async function startServer() {
 
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true, service: 'klipcast-bot' });
+  });
+
+  app.post('/api/auth/verify-google', async (req, res) => {
+    try {
+      const headerToken = req.header('X-Firebase-Id-Token')?.trim();
+      const bodyToken =
+        typeof (req.body as { idToken?: unknown } | undefined)?.idToken === 'string'
+          ? (req.body as { idToken: string }).idToken.trim()
+          : '';
+      const idToken = headerToken || bodyToken;
+
+      const user = await verifyFirebaseGoogleIdToken(idToken);
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({
+        verified: true,
+        user,
+      });
+    } catch (err) {
+      if (err instanceof GoogleTokenVerificationError) {
+        res.status(err.status).json({
+          verified: false,
+          code: err.code,
+          error: err.message,
+        });
+        return;
+      }
+      res.status(500).json({
+        verified: false,
+        code: 'VERIFY_INTERNAL_ERROR',
+        error: 'Gagal memverifikasi sesi Google di server.',
+      });
+    }
   });
 
   app.get('/api/state', (_req, res) => {

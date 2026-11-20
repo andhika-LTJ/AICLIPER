@@ -1,4 +1,4 @@
-import { Loader2, LogOut } from 'lucide-react';
+import { CheckCircle2, Loader2, LogOut } from 'lucide-react';
 
 interface GoogleSignInButtonProps {
   onClick: () => void;
@@ -6,6 +6,7 @@ interface GoogleSignInButtonProps {
   isLoading?: boolean;
   label?: string;
   compact?: boolean;
+  fullWidth?: boolean;
 }
 
 export function GoogleSignInButton({
@@ -14,6 +15,7 @@ export function GoogleSignInButton({
   isLoading = false,
   label = 'Sign in with Google',
   compact = false,
+  fullWidth = false,
 }: GoogleSignInButtonProps) {
   return (
     <button
@@ -21,7 +23,7 @@ export function GoogleSignInButton({
       onClick={onClick}
       disabled={disabled || isLoading}
       className={`inline-flex items-center justify-center gap-2.5 bg-white hover:bg-slate-50 active:bg-slate-100 text-[#1f1f1f] border border-[#747775] rounded-full font-medium shadow-2xs studio-transition cursor-pointer whitespace-nowrap disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-600 ${
-        compact ? 'h-9 px-3.5 text-xs' : 'h-10 px-4 text-sm'
+        fullWidth ? 'w-full h-11 px-5 text-sm' : compact ? 'h-9 px-3.5 text-xs' : 'h-10 px-4 text-sm'
       }`}
     >
       {isLoading ? (
@@ -53,7 +55,7 @@ export function GoogleSignInButton({
           <path fill="none" d="M0 0h48v48H0z" />
         </svg>
       )}
-      <span>{isLoading ? 'Menghubungkan...' : label}</span>
+      <span>{isLoading ? 'Memverifikasi...' : label}</span>
     </button>
   );
 }
@@ -62,6 +64,7 @@ interface GoogleAccountBadgeProps {
   displayName: string | null;
   email: string | null;
   photoUrl: string | null;
+  verified?: boolean;
   onSignOut: () => void;
   compact?: boolean;
 }
@@ -70,12 +73,13 @@ export function GoogleAccountBadge({
   displayName,
   email,
   photoUrl,
+  verified = true,
   onSignOut,
   compact = false,
 }: GoogleAccountBadgeProps) {
   const label = displayName || email || 'Akun Google';
   return (
-    <div className="inline-flex items-center gap-2 pl-1.5 pr-2.5 py-1 bg-slate-100 border border-slate-200 rounded-full min-w-0 max-w-[240px]">
+    <div className="inline-flex items-center gap-2 pl-1.5 pr-2 py-1 bg-slate-100 border border-slate-200 rounded-full min-w-0 max-w-[260px]">
       {photoUrl ? (
         <img
           src={photoUrl}
@@ -90,16 +94,22 @@ export function GoogleAccountBadge({
       )}
       <span
         className={`font-medium text-slate-800 truncate ${compact ? 'text-xs' : 'text-xs'}`}
-        title={email ?? label}
+        title={email ? `${label} (${email})` : label}
       >
         {label}
       </span>
+      {verified && (
+        <CheckCircle2
+          className="w-3.5 h-3.5 text-emerald-700 shrink-0"
+          aria-label="Akun Google terverifikasi"
+        />
+      )}
       <button
         type="button"
         onClick={onSignOut}
         aria-label="Keluar dari akun Google"
         title="Keluar dari akun Google"
-        className="p-1 text-slate-500 hover:text-red-600 rounded-full cursor-pointer shrink-0"
+        className="p-1 text-slate-500 hover:text-red-600 rounded-full cursor-pointer shrink-0 focus-visible:outline-2 focus-visible:outline-red-600"
       >
         <LogOut className="w-3.5 h-3.5" aria-hidden="true" />
       </button>
