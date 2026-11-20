@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import type { User } from 'firebase/auth';
 import { AutomationSettingsView } from './components/AutomationSettingsView';
 import { ClipListPanel } from './components/ClipListPanel';
 import { ClipPublisherPanel } from './components/ClipPublisherPanel';
@@ -8,6 +9,7 @@ import { PodcastInputBar } from './components/PodcastInputBar';
 import { ShortsPreviewStage } from './components/ShortsPreviewStage';
 import { SummaryArchiveView } from './components/SummaryArchiveView';
 import { TopBar, type NavSection } from './components/TopBar';
+import { YouTubeDirectUploadModal } from './components/YouTubeDirectUploadModal';
 import { INITIAL_STUDIO_STATE } from './data/seedPodcasts';
 import type {
   BotAutomationConfig,
@@ -16,6 +18,14 @@ import type {
   StudioStoreState,
 } from './types/clipper';
 import { PLATFORM_LABELS } from './utils/youtube';
+import {
+  clearYouTubeAccessToken,
+  getYouTubeAccessToken,
+  initYouTubeAuth,
+  signInWithGoogleForYouTube,
+  signOutYouTube,
+} from './utils/youtubeAuth';
+import type { YouTubePrivacyStatus } from '../server/youtubeUploader';
 
 export default function App() {
   const [store, setStore] = useState<StudioStoreState>(INITIAL_STUDIO_STATE);
@@ -37,7 +47,33 @@ export default function App() {
   } | null>(null);
   const [isManualModalOpen, setIsManualModalOpen] = useState(false);
 
+  // Client-side Google Auth for YouTube Shorts direct upload (access token stays in memory only)
+  const [youtubeUser, setYoutubeUser] = useState<User | null>(null);
+  const [youtubeAccessToken, setYoutubeAccessToken] = useState<string | null>(() =>
+    getYouTubeAccessToken()
+  );
+  const [isSigningInGoogle, setIsSigningInGoogle] = useState(false);
+  const [googleAuthError, setGoogleAuthError] = useState<string | null>(null);
+  const [isYouTubeUploadModalOpen, setIsYouTubeUploadModalOpen] = useState(false);
+  const [isUploadingYouTube, setIsUploadingYouTube] = useState(false);
+  const [youTubeUploadError, setYouTubeUploadError] = useState<string | null>(null);
+
   const urlInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    const unsubscribe = initYouTubeAuth(
+      (user, token) => {
+        setYoutubeUser(user);
+        setYoutubeAccessToken(token);
+        setGoogleAuthError(null);
+      },
+      (user) => {
+        setYoutubeUser(user);
+        setYoutubeAccessToken(null);
+      }
+    );
+    return unsubscribe;
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -231,12 +267,103 @@ export default function App() {
     setActiveSection('studio');
   };
 
+  const handleGoogleSignIn = async () => {
+    setIsSigningInGoogle(true);
+    setGoogleAuthError(null);
+    try {
+      const session = await signInWithGoogleForYouTube();
+      setYoutubeUser(session.user);
+      setYoutubeAccessToken(session.accessToken);
+    } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : 'Gagal masuk dengan Google. Pastikan popup tidak diblokir browser.';
+      setGoogleAuthError(msg);
+    } finally {
+      setIsSigningInGoogle(false);
+    }
+  };
+
+  const handleGoogleSignOut = async () => {
+    await signOutYouTube();
+    setYoutubeUser(null);
+    setYoutubeAccessToken(null);
+    setGoogleAuthError(null);
+  };
+
+  const handleOpenYouTubeDirectUpload = () => {
+    setYouTubeUploadError(null);
+    setIsYouTubeUploadModalOpen(true);
+  };
+
+  const handleConfirmYouTubeDirectUpload = async (payload: {
+    title: string;
+    description: string;
+    tags: string[];
+    privacyStatus: YouTubePrivacyStatus;
+  }) => {
+    if (!activeClip) return;
+    const token = youtubeAccessToken ?? getYouTubeAccessToken();
+    if (!token) {
+      setYouTubeUploadError('Sesi login Google belum aktif. Silakan masuk dengan Google terlebih dahulu.');
+      return;
+    }
+
+    setIsUploadingYouTube(true);
+    setYouTubeUploadError(null);
+    setPublishFeedback(null);
+    try {
+      const res = await fetch(`/api/clips/${activeClip.id}/youtube-upload`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(payload),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        youtubeWatchUrl?: string;
+        store?: StudioStoreState;
+        error?: string;
+        needsReauth?: boolean;
+      };
+      if (!res.ok) {
+        if (data.needsReauth || res.status === 401) {
+          clearYouTubeAccessToken();
+          setYoutubeAccessToken(null);
+        }
+        setYouTubeUploadError(data.error || 'Gagal mengunggah video ke YouTube.');
+        return;
+      }
+
+      if (data.store) {
+        setStore(data.store);
+      }
+      setIsYouTubeUploadModalOpen(false);
+      setPublishFeedback({
+        type: 'success',
+        text: data.youtubeWatchUrl
+          ? `Video berhasil diunggah ke YouTube Shorts! (${data.youtubeWatchUrl})`
+          : 'Video berhasil diunggah ke YouTube Shorts!',
+      });
+    } catch {
+      setYouTubeUploadError('Terjadi gangguan jaringan saat mengunggah video ke YouTube.');
+    } finally {
+      setIsUploadingYouTube(false);
+    }
+  };
+
   return (
     <div className="min-h-screen flex flex-col bg-slate-50 text-slate-900">
       <TopBar
         activeSection={activeSection}
         onNavigate={setActiveSection}
         onStartNewLink={handleStartNewLink}
+        youtubeUser={youtubeUser}
+        hasYouTubeToken={Boolean(youtubeAccessToken)}
+        isSigningInGoogle={isSigningInGoogle}
+        onGoogleSignIn={() => void handleGoogleSignIn()}
+        onGoogleSignOut={() => void handleGoogleSignOut()}
       />
 
       <main className="flex-1 w-full max-w-[1440px] mx-auto px-4 sm:px-8 py-6 sm:py-8">
@@ -312,6 +439,13 @@ export default function App() {
                   defaultPlatforms={store.automation.defaultPlatforms}
                   isPublishing={isPublishing}
                   publishFeedback={publishFeedback}
+                  youtubeUser={youtubeUser}
+                  hasYouTubeToken={Boolean(youtubeAccessToken)}
+                  isSigningInGoogle={isSigningInGoogle}
+                  googleAuthError={googleAuthError}
+                  onGoogleSignIn={() => void handleGoogleSignIn()}
+                  onGoogleSignOut={() => void handleGoogleSignOut()}
+                  onOpenYouTubeDirectUpload={handleOpenYouTubeDirectUpload}
                   onUpdateClip={handleUpdateClip}
                   onAutoPostAll={(id, platforms) => handlePublishClip(id, 'auto', platforms)}
                   onOpenManualShorts={() => setIsManualModalOpen(true)}
@@ -369,20 +503,42 @@ export default function App() {
       </main>
 
       {activeEpisode && activeClip && (
-        <ManualShortsModal
-          clip={activeClip}
-          episode={activeEpisode}
-          isOpen={isManualModalOpen}
-          defaultRenderQuality={
-            store.automation.enableUltraHdRender
-              ? '4k'
-              : store.automation.defaultRenderQuality
-          }
-          defaultRenderLayout={store.automation.defaultRenderLayout}
-          onClose={() => setIsManualModalOpen(false)}
-          onMarkManualPublished={(id) => handlePublishClip(id, 'manual', ['youtube_shorts'])}
-          onStoreUpdate={setStore}
-        />
+        <>
+          <ManualShortsModal
+            clip={activeClip}
+            episode={activeEpisode}
+            isOpen={isManualModalOpen}
+            defaultRenderQuality={
+              store.automation.enableUltraHdRender
+                ? '4k'
+                : store.automation.defaultRenderQuality
+            }
+            defaultRenderLayout={store.automation.defaultRenderLayout}
+            onClose={() => setIsManualModalOpen(false)}
+            onMarkManualPublished={(id) => handlePublishClip(id, 'manual', ['youtube_shorts'])}
+            onStoreUpdate={setStore}
+          />
+          <YouTubeDirectUploadModal
+            isOpen={isYouTubeUploadModalOpen}
+            clip={activeClip}
+            episode={activeEpisode}
+            defaultVisibility={store.automation.youtubeDefaultVisibility}
+            accountEmail={youtubeUser?.email ?? null}
+            accountName={youtubeUser?.displayName ?? null}
+            isUploading={isUploadingYouTube}
+            uploadError={youTubeUploadError}
+            onClose={() => {
+              if (!isUploadingYouTube) setIsYouTubeUploadModalOpen(false);
+            }}
+            onRequestRenderFirst={() => {
+              document.getElementById('render-layout-select')?.scrollIntoView({
+                behavior: 'smooth',
+                block: 'center',
+              });
+            }}
+            onConfirmUpload={handleConfirmYouTubeDirectUpload}
+          />
+        </>
       )}
     </div>
   );

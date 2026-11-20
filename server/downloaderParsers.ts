@@ -224,3 +224,45 @@ export function validateNetscapeCookiesTxt(raw: string): { valid: boolean; reaso
   return { valid: true };
 }
 
+/**
+ * Resolves Netscape cookies.txt from an environment variable (supports literal `\n` escapes
+ * and optional `base64:` prefix for Cloud Run / Secret Manager injection).
+ */
+export function resolveEnvYoutubeCookies(rawEnv?: string | null): string | null {
+  if (!rawEnv || typeof rawEnv !== 'string') return null;
+  let candidate = rawEnv.trim();
+  if (!candidate) return null;
+
+  if (candidate.startsWith('base64:')) {
+    try {
+      candidate = Buffer.from(candidate.slice(7).trim(), 'base64').toString('utf8').trim();
+    } catch {
+      return null;
+    }
+  } else if (!candidate.includes('\n') && candidate.includes('\\n')) {
+    candidate = candidate.replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n').trim();
+  } else if (!candidate.includes('\t') && /^[A-Za-z0-9+/=]+$/.test(candidate) && candidate.length > 40) {
+    try {
+      const decoded = Buffer.from(candidate, 'base64').toString('utf8').trim();
+      if (decoded.includes('\t')) {
+        candidate = decoded;
+      }
+    } catch {
+      // Ignore invalid base64
+    }
+  }
+
+  return validateNetscapeCookiesTxt(candidate).valid ? candidate : null;
+}
+
+/**
+ * Detects YouTube datacenter / bot-check / Turnstile blocks so downloaders fail fast
+ * instead of stalling until full timeout.
+ */
+export function isBotBlockErrorText(text: string): boolean {
+  if (!text) return false;
+  return /sign in to confirm|not a bot|confirm you.?re not a bot|use --cookies|cookies-from-browser|login_required|cf-turnstile|captcha required/i.test(
+    text
+  );
+}
+

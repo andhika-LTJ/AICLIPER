@@ -97,6 +97,8 @@ export function ShortsPreviewStage({
   const [isClearingQueue, setIsClearingQueue] = useState(false);
   const [needsSourceOrCookies, setNeedsSourceOrCookies] = useState(false);
   const [isUploadingSource, setIsUploadingSource] = useState(false);
+  const [directUrlDraft, setDirectUrlDraft] = useState(episode.directVideoUrl ?? '');
+  const [isSavingDirectUrl, setIsSavingDirectUrl] = useState(false);
   const [cookiesDraft, setCookiesDraft] = useState('');
   const [isSavingCookies, setIsSavingCookies] = useState(false);
   const [copiedCmd, setCopiedCmd] = useState(false);
@@ -138,6 +140,7 @@ export function ShortsPreviewStage({
     );
     setRenderQuality(clip.renderedQuality ?? defaultRenderQuality);
     setEnableEmotionEffects(clip.emotionEffectsEnabled ?? defaultEmotionEffectsEnabled);
+    setDirectUrlDraft(episode.directVideoUrl ?? '');
   }, [
     clip.id,
     clip.startSec,
@@ -146,6 +149,8 @@ export function ShortsPreviewStage({
     clip.renderedLayout,
     clip.renderedQuality,
     clip.emotionEffectsEnabled,
+    episode.id,
+    episode.directVideoUrl,
     defaultRenderLayout,
     defaultRenderQuality,
     defaultEmotionEffectsEnabled,
@@ -340,6 +345,37 @@ export function ShortsPreviewStage({
       await handleRenderMp4();
     } finally {
       setIsSavingCookies(false);
+    }
+  };
+
+  const handleSaveDirectSourceUrl = async () => {
+    setIsSavingDirectUrl(true);
+    setRenderError(null);
+    try {
+      const res = await fetch(`/api/episodes/${episode.id}/source-url`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ directVideoUrl: directUrlDraft }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        store?: StudioStoreState;
+      };
+      if (!res.ok) {
+        setRenderError(data.error || 'Gagal menyimpan URL video sumber.');
+        return;
+      }
+      if (data.store) {
+        onStoreUpdate(data.store);
+      }
+      setNeedsSourceOrCookies(false);
+      if (directUrlDraft.trim()) {
+        await handleRenderMp4();
+      }
+    } catch {
+      setRenderError('Gagal menyimpan URL video sumber langsung.');
+    } finally {
+      setIsSavingDirectUrl(false);
     }
   };
 
@@ -879,6 +915,12 @@ export function ShortsPreviewStage({
           </p>
         )}
 
+        {!episode.hasUploadedSourceVideo && episode.directVideoUrl && (
+          <p className="text-[11px] font-medium text-emerald-700">
+            Link video .MP4 langsung terpasang — render melewati blokir YouTube secara otomatis.
+          </p>
+        )}
+
         {renderError && (
           <div
             role="alert"
@@ -904,18 +946,50 @@ export function ShortsPreviewStage({
         )}
 
         {needsSourceOrCookies && (
-          <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-lg space-y-2.5">
-            <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-900">
-              <KeyRound className="w-3.5 h-3.5 text-red-600 shrink-0" aria-hidden="true" />
-              <span>Sumber Video 1080p / 4K Asli (Gratis & Tanpa Batas):</span>
+          <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-lg space-y-3">
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-900">
+                <Film className="w-3.5 h-3.5 text-red-600 shrink-0" aria-hidden="true" />
+                <span>Alternatif 1 — Link Video .MP4 Langsung (Bebas Blokir YouTube):</span>
+              </div>
+              <p className="text-[11px] text-slate-600 leading-relaxed">
+                Tempel URL file <code>.mp4</code> langsung (GCS / S3 / CDN / server Anda) atau
+                gunakan tombol <strong>Unggah MP4 Sumber</strong> di atas agar server tidak perlu
+                mengunduh dari YouTube.
+              </p>
+              <div className="flex gap-2">
+                <label htmlFor="inline-direct-mp4-url" className="sr-only">
+                  URL video MP4 langsung
+                </label>
+                <input
+                  id="inline-direct-mp4-url"
+                  type="url"
+                  value={directUrlDraft}
+                  onChange={(e) => setDirectUrlDraft(e.target.value)}
+                  placeholder="https://cdn.domainanda.com/podcast-full.mp4"
+                  className="flex-1 min-w-0 h-8 px-2.5 text-xs bg-white border border-slate-200 rounded-md focus:border-red-600 focus:outline-none"
+                />
+                <button
+                  type="button"
+                  disabled={isSavingDirectUrl}
+                  onClick={handleSaveDirectSourceUrl}
+                  className="h-8 px-3 text-xs font-semibold text-white bg-red-600 hover:bg-red-700 rounded-md cursor-pointer whitespace-nowrap disabled:opacity-60"
+                >
+                  {isSavingDirectUrl ? 'Menyimpan...' : 'Pakai Link'}
+                </button>
+              </div>
             </div>
-            <p className="text-[11px] text-slate-600 leading-relaxed">
-              Server sudah menarik <strong>1080p Full HD / 4K asli secara otomatis</strong> tanpa
-              login. Opsi ini bersifat cadangan untuk video khusus (privat/dibatasi usia): tempel
-              isi file <code>cookies.txt</code> format Netscape dari ekstensi{' '}
-              <em>Get cookies.txt LOCALLY</em> (bukan perintah <code>yt-dlp</code>).
-            </p>
-            <div className="space-y-2">
+
+            <div className="pt-2.5 border-t border-slate-200 space-y-2">
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-900">
+                <KeyRound className="w-3.5 h-3.5 text-red-600 shrink-0" aria-hidden="true" />
+                <span>Alternatif 2 — Cookies YouTube (Netscape cookies.txt):</span>
+              </div>
+              <p className="text-[11px] text-slate-600 leading-relaxed">
+                Tempel isi file <code>cookies.txt</code> format Netscape dari ekstensi{' '}
+                <em>Get cookies.txt LOCALLY</em> agar server cloud bisa mengunduh langsung dari
+                YouTube tanpa terkena cek bot.
+              </p>
               <label htmlFor="inline-cookies-txt" className="sr-only">
                 Tempel cookies.txt YouTube
               </label>

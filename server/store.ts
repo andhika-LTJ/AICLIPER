@@ -12,7 +12,23 @@ import type {
 import { formatTimestamp, generateSrtFromClip } from '../src/utils/youtube.ts';
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
+const RENDERS_DIR = path.join(DATA_DIR, 'renders');
 const STORE_PATH = path.join(DATA_DIR, 'klipcast-store.json');
+
+function reconcileClipRenderFiles(clips: PodcastClip[]): PodcastClip[] {
+  return clips.map((clip) => {
+    if (clip.renderedClipUrl && clip.renderedClipUrl.startsWith('/api/clips/')) {
+      const expectedFile = path.join(RENDERS_DIR, `${clip.id}.mp4`);
+      if (!fs.existsSync(expectedFile)) {
+        const rest = { ...clip };
+        delete rest.renderedClipUrl;
+        delete rest.renderedFileSizeBytes;
+        return rest;
+      }
+    }
+    return clip;
+  });
+}
 
 function ensureStoreFile(): StudioStoreState {
   if (!fs.existsSync(DATA_DIR)) {
@@ -50,6 +66,7 @@ function ensureStoreFile(): StudioStoreState {
 
     return {
       ...parsed,
+      clips: reconcileClipRenderFiles(parsed.clips),
       automation: {
         ...baseAuto,
         ...rawAuto,

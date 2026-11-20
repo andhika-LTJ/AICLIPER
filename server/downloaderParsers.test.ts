@@ -7,7 +7,9 @@ import {
   extractNotubeServerIds,
   formatAmp4TrimArg,
   getQualityRank,
+  isBotBlockErrorText,
   normalizeThirdPartyMediaUrl,
+  resolveEnvYoutubeCookies,
   selectBestVideoStreamIndex,
   solveAltchaChallenge,
   solveSaveNowPow,
@@ -99,5 +101,26 @@ test('validateNetscapeCookiesTxt accepts real YouTube cookies and rejects CLI co
     '.youtube.com\tTRUE\t/\tTRUE\t1893456000\tHSID\tdef456uvw',
   ].join('\n');
   assert.equal(validateNetscapeCookiesTxt(validCookies).valid, true);
+});
+
+test('resolveEnvYoutubeCookies decodes escaped newlines and base64 cookies safely', () => {
+  const validCookies = [
+    '# Netscape HTTP Cookie File',
+    '.youtube.com\tTRUE\t/\tTRUE\t1893456000\tSID\tabc123xyz',
+  ].join('\n');
+
+  const escaped = validCookies.replace(/\n/g, '\\n');
+  assert.equal(resolveEnvYoutubeCookies(escaped), validCookies);
+
+  const b64 = `base64:${Buffer.from(validCookies, 'utf8').toString('base64')}`;
+  assert.equal(resolveEnvYoutubeCookies(b64), validCookies);
+
+  assert.equal(resolveEnvYoutubeCookies('invalid-cookie-string'), null);
+});
+
+test('isBotBlockErrorText recognizes YouTube bot checks and Turnstile challenges', () => {
+  assert.equal(isBotBlockErrorText("ERROR: Sign in to confirm you're not a bot"), true);
+  assert.equal(isBotBlockErrorText('s60/mp4hd turnstile challenge cf-turnstile'), true);
+  assert.equal(isBotBlockErrorText('FFmpeg exited normally'), false);
 });
 

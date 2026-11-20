@@ -57,6 +57,11 @@ function getAiClient(): GoogleGenAI | null {
   });
 }
 
+function combineAbortSignal(timeoutMs: number, signal?: AbortSignal): AbortSignal {
+  const t = AbortSignal.timeout(timeoutMs);
+  return signal ? AbortSignal.any([t, signal]) : t;
+}
+
 /**
  * Pure helper: combines FFmpeg-detected camera cuts with dense uniform sampling (up to `maxFrames`)
  * so active-speaker tracking captures every hard camera switch plus within-shot speaker turns.
@@ -163,12 +168,13 @@ async function extractClipAudioAndSmartFrames(params: {
   rawVideoPath: string;
   durationSec: number;
   workDir: string;
+  signal?: AbortSignal;
 }): Promise<{
   audioBase64: string;
   audioWindows: AudioWindowPayload[];
   frames: Array<{ timeSec: number; isSceneCut: boolean; base64: string }>;
 }> {
-  const { rawVideoPath, durationSec, workDir } = params;
+  const { rawVideoPath, durationSec, workDir, signal } = params;
   const audioPath = path.join(workDir, 'clip_audio.mp3');
 
   // Step 1: Run zero-anchored audio extraction & scene-cut detection concurrently (~1.0–1.5s total)
@@ -192,14 +198,15 @@ async function extractClipAudioAndSmartFrames(params: {
         '32k',
         audioPath,
       ],
-      { timeout: 30_000 }
+      { timeout: 30_000, signal }
     ),
     detectSceneCutTimestamps(rawVideoPath),
   ]);
 
   const audioBase64 = fs.readFileSync(audioPath).toString('base64');
-  const plannedWindows = planAudioTranscriptionWindows(durationSec, 12);
-  const samplePoints = planSmartSampleTimestamps(sceneCuts, durationSec, 16);
+  const plannedWindows = planAudioTranscriptionWindows(durationSec, 15);
+  const maxSampleFrames = durationSec <= 35 ? 10 : 12;
+  const samplePoints = planSmartSampleTimestamps(sceneCuts, durationSec, maxSampleFrames);
 
   // Step 2: Slice 12s anchored audio windows + extract 480px video frames in parallel
   const audioWindowsPromise: Promise<AudioWindowPayload[]> =
@@ -295,8 +302,9 @@ async function transcribeSingleAudioWindow(params: {
   ai: GoogleGenAI;
   payload: AudioWindowPayload;
   episode: PodcastEpisode;
+  signal?: AbortSignal;
 }): Promise<CaptionCue[]> {
-  const { ai, payload, episode } = params;
+  const { ai, payload, episode, signal } = params;
   const dur = payload.window.durationSec;
 
   const audioPart = {
@@ -337,6 +345,7 @@ Aturan KETAT:
   };
 
   for (const model of ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'] as const) {
+    if (signal?.aborted) break;
     try {
       const res = await ai.models.generateContent({
         model,
@@ -347,7 +356,7 @@ Aturan KETAT:
             : {}),
           responseMimeType: 'application/json',
           responseSchema: schema,
-          abortSignal: AbortSignal.timeout(28_000),
+          abortSignal: combineAbortSignal(24_000, signal),
         },
       });
       const raw = (res.text ?? '').trim();
@@ -357,6 +366,7 @@ Aturan KETAT:
         return parsed.cues;
       }
     } catch {
+      if (signal?.aborted) break;
       // Try next fallback model
     }
   }
@@ -375,6 +385,7 @@ async function transcribeVerbatimAndAnalyzeEmotions(params: {
   durationSec: number;
   episode: PodcastEpisode;
   clip: PodcastClip;
+  signal?: AbortSignal;
 }): Promise<{
   verbatimTranscript: string;
   cues: CaptionCue[];
@@ -384,14 +395,14 @@ async function transcribeVerbatimAndAnalyzeEmotions(params: {
   emotionMoments: EmotionMoment[];
   emotionSummary: string;
 } | null> {
-  const { ai, audioBase64, audioWindows, durationSec, episode, clip } = params;
+  const { ai, audioBase64, audioWindows, durationSec, episode, clip, signal } = params;
 
-  // Step A: Transcribe all 12-second anchored windows concurrently -> zero cumulative drift!
+  // Step A: Transcribe all 15-second anchored windows concurrently -> zero cumulative drift!
   const windowCuesList = await Promise.all(
     audioWindows.map(async (payload) => ({
       windowStartSec: payload.window.startSec,
       windowDurationSec: payload.window.durationSec,
-      cues: await transcribeSingleAudioWindow({ ai, payload, episode }),
+      cues: await transcribeSingleAudioWindow({ ai, payload, episode, signal }),
     }))
   );
 
@@ -471,6 +482,7 @@ Tugas WAJIB:
   };
 
   for (const model of ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'] as const) {
+    if (signal?.aborted) break;
     try {
       const res = await ai.models.generateContent({
         model,
@@ -481,7 +493,7 @@ Tugas WAJIB:
             : {}),
           responseMimeType: 'application/json',
           responseSchema: schema,
-          abortSignal: AbortSignal.timeout(30_000),
+          abortSignal: combineAbortSignal(25_000, signal),
         },
       });
       const raw = (res.text ?? '').trim();
@@ -553,9 +565,10 @@ async function detectSpeakerBatchWithGemini(params: {
   audioBase64: string;
   batchFrames: Array<{ timeSec: number; isSceneCut: boolean; base64: string; spokenHint?: string }>;
   durationSec: number;
+  signal?: AbortSignal;
 }): Promise<{ keyframes: SpeakerKeyframe[]; summary: string } | null> {
-  const { ai, audioBase64, batchFrames, durationSec } = params;
-  if (batchFrames.length === 0) return null;
+  const { ai, audioBase64, batchFrames, durationSec, signal } = params;
+  if (batchFrames.length === 0 || signal?.aborted) return null;
 
   const parts: Array<
     | { inlineData: { mimeType: string; data: string } }
@@ -632,6 +645,7 @@ Keluarkan tepat ${batchFrames.length} objek keyframe yang cocok 1-ke-1 dengan ti
   };
 
   for (const model of ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'] as const) {
+    if (signal?.aborted) break;
     try {
       const res = await ai.models.generateContent({
         model,
@@ -642,7 +656,7 @@ Keluarkan tepat ${batchFrames.length} objek keyframe yang cocok 1-ke-1 dengan ti
             : {}),
           responseMimeType: 'application/json',
           responseSchema: schema,
-          abortSignal: AbortSignal.timeout(30_000),
+          abortSignal: combineAbortSignal(26_000, signal),
         },
       });
       const raw = (res.text ?? '').trim();
@@ -707,16 +721,17 @@ async function detectActiveSpeakerWithGemini(params: {
   frames: Array<{ timeSec: number; isSceneCut: boolean; base64: string }>;
   cues: CaptionCue[];
   durationSec: number;
+  signal?: AbortSignal;
 }): Promise<{ keyframes: SpeakerKeyframe[]; summary: string } | null> {
-  const { ai, audioBase64, frames, cues, durationSec } = params;
-  if (frames.length === 0) return null;
+  const { ai, audioBase64, frames, cues, durationSec, signal } = params;
+  if (frames.length === 0 || signal?.aborted) return null;
 
   const enrichedFrames = frames.map((f) => ({
     ...f,
     spokenHint: getSpokenContextNearTime(cues, f.timeSec),
   }));
 
-  const batchSize = 4;
+  const batchSize = 6;
   const batches: Array<typeof enrichedFrames> = [];
   for (let i = 0; i < enrichedFrames.length; i += batchSize) {
     batches.push(enrichedFrames.slice(i, i + batchSize));
@@ -729,6 +744,7 @@ async function detectActiveSpeakerWithGemini(params: {
         audioBase64,
         batchFrames,
         durationSec,
+        signal,
       })
     )
   );
@@ -822,6 +838,7 @@ export async function analyzeTrimmedClipIntelligence(params: {
       rawVideoPath,
       durationSec,
       workDir,
+      signal,
     });
 
     checkAborted();
@@ -832,6 +849,7 @@ export async function analyzeTrimmedClipIntelligence(params: {
       durationSec,
       episode,
       clip,
+      signal,
     });
 
     checkAborted();
@@ -841,6 +859,7 @@ export async function analyzeTrimmedClipIntelligence(params: {
       frames,
       cues: sttAndEmotion?.cues ?? fallbackResult.cues,
       durationSec,
+      signal,
     });
 
     checkAborted();

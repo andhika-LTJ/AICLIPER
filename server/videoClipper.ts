@@ -28,7 +28,11 @@ import {
   invalidateEpisodeStreamCache,
   resolveThirdPartyMp4Stream,
 } from './thirdPartyDownloader.ts';
-import { validateNetscapeCookiesTxt } from './downloaderParsers.ts';
+import {
+  isBotBlockErrorText,
+  resolveEnvYoutubeCookies,
+  validateNetscapeCookiesTxt,
+} from './downloaderParsers.ts';
 import {
   assessStreamSyncHealth,
   type StreamSyncAssessment,
@@ -41,16 +45,20 @@ const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
 const RENDERS_DIR = path.join(DATA_DIR, 'renders');
 const TMP_DIR = path.join(DATA_DIR, 'tmp');
 const COOKIES_PATH = path.join(DATA_DIR, 'youtube-cookies.txt');
+const ENV_COOKIES_PATH = path.join(DATA_DIR, 'youtube-env-cookies.txt');
 const YTDLP_BIN = '/tmp/yt-dlp';
 
 const BROWSER_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 
-// Reserve at least 1 CPU core for the Express HTTP event loop & SSE streams so heavy
-// 1080p/4K FFmpeg encodes never starve incoming cancel/status requests or trigger 429 overload.
-const FFMPEG_THREADS = String(Math.max(1, Math.min(3, (os.cpus()?.length || 2) - 1)));
+const CPU_COUNT = os.cpus()?.length || 2;
+const FFMPEG_THREADS = String(Math.max(2, Math.min(4, CPU_COUNT)));
 
-export type ClipRenderSource = 'uploaded_video' | 'youtube_stream' | 'third_party_downloader';
+export type ClipRenderSource =
+  | 'uploaded_video'
+  | 'direct_video_url'
+  | 'youtube_stream'
+  | 'third_party_downloader';
 
 function ensureDirs() {
   for (const dir of [DATA_DIR, UPLOADS_DIR, RENDERS_DIR, TMP_DIR]) {
@@ -79,14 +87,30 @@ export function getRenderedClipPath(clipId: string): string | null {
   return fs.existsSync(target) ? target : null;
 }
 
-export function hasYoutubeCookies(): boolean {
-  if (!fs.existsSync(COOKIES_PATH)) return false;
-  try {
-    const content = fs.readFileSync(COOKIES_PATH, 'utf-8');
-    return validateNetscapeCookiesTxt(content).valid;
-  } catch {
-    return false;
+function getActiveCookiesFilePath(): string | null {
+  if (fs.existsSync(COOKIES_PATH)) {
+    try {
+      const content = fs.readFileSync(COOKIES_PATH, 'utf-8');
+      if (validateNetscapeCookiesTxt(content).valid) {
+        return COOKIES_PATH;
+      }
+    } catch {
+      // Fall through to env cookies
+    }
   }
+
+  const envCookies = resolveEnvYoutubeCookies(process.env.YOUTUBE_COOKIES_TXT);
+  if (envCookies) {
+    ensureDirs();
+    fs.writeFileSync(ENV_COOKIES_PATH, envCookies, 'utf-8');
+    return ENV_COOKIES_PATH;
+  }
+
+  return null;
+}
+
+export function hasYoutubeCookies(): boolean {
+  return Boolean(getActiveCookiesFilePath());
 }
 
 export function saveYoutubeCookies(rawCookies: string): {
@@ -97,7 +121,7 @@ export function saveYoutubeCookies(rawCookies: string): {
   const trimmed = rawCookies.trim();
   if (!trimmed) {
     if (fs.existsSync(COOKIES_PATH)) fs.unlinkSync(COOKIES_PATH);
-    return { saved: false };
+    return { saved: hasYoutubeCookies() };
   }
   const check = validateNetscapeCookiesTxt(trimmed);
   if (!check.valid) {
@@ -126,20 +150,57 @@ export function invalidateLowResSegmentCache(episodeId?: string): void {
   }
 }
 
+let resolvedYtDlpPath: string | null = null;
+let ytDlpInstallPromise: Promise<string> | null = null;
+
 async function ensureYtDlpBinary(): Promise<string> {
-  if (fs.existsSync(YTDLP_BIN)) {
+  if (resolvedYtDlpPath && (resolvedYtDlpPath === 'yt-dlp' || fs.existsSync(resolvedYtDlpPath))) {
+    return resolvedYtDlpPath;
+  }
+  if (ytDlpInstallPromise) {
+    return ytDlpInstallPromise;
+  }
+
+  ytDlpInstallPromise = (async (): Promise<string> => {
+    try {
+      await execFileAsync('yt-dlp', ['--version'], { timeout: 3_000 });
+      resolvedYtDlpPath = 'yt-dlp';
+      return 'yt-dlp';
+    } catch {
+      // Not on PATH; check /tmp/yt-dlp
+    }
+
+    if (fs.existsSync(YTDLP_BIN)) {
+      resolvedYtDlpPath = YTDLP_BIN;
+      return YTDLP_BIN;
+    }
+
+    const res = await fetch(
+      'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux',
+      { signal: AbortSignal.timeout(25_000) }
+    );
+    if (!res.ok) {
+      throw new Error('Gagal menyiapkan utilitas pengunduh video yt-dlp.');
+    }
+    const arrayBuffer = await res.arrayBuffer();
+    fs.writeFileSync(YTDLP_BIN, Buffer.from(arrayBuffer), { mode: 0o755 });
+    resolvedYtDlpPath = YTDLP_BIN;
     return YTDLP_BIN;
+  })();
+
+  try {
+    return await ytDlpInstallPromise;
+  } finally {
+    ytDlpInstallPromise = null;
   }
-  const res = await fetch(
-    'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux',
-    { signal: AbortSignal.timeout(30000) }
-  );
-  if (!res.ok) {
-    throw new Error('Gagal menyiapkan utilitas pengunduh video yt-dlp.');
+}
+
+export async function prewarmYtDlpBinary(): Promise<void> {
+  try {
+    await ensureYtDlpBinary();
+  } catch {
+    // Silent background warmup; on-demand render retries if needed
   }
-  const arrayBuffer = await res.arrayBuffer();
-  fs.writeFileSync(YTDLP_BIN, Buffer.from(arrayBuffer), { mode: 0o755 });
-  return YTDLP_BIN;
 }
 
 export class YoutubeBotCheckError extends Error {
@@ -589,12 +650,20 @@ async function tryYtDlpDownloadSection(params: {
   startSec: number;
   endSec: number;
   downloadedRawPath: string;
+  cookiesFile?: string | null;
   signal?: AbortSignal;
 }): Promise<void> {
   throwIfAborted(params.signal);
   const ytdlp = await ensureYtDlpBinary();
   const args = [
     '--no-playlist',
+    '--no-warnings',
+    '--socket-timeout',
+    '15',
+    '--retries',
+    '2',
+    '--fragment-retries',
+    '2',
     '--js-runtimes',
     'node',
     '--download-sections',
@@ -608,23 +677,111 @@ async function tryYtDlpDownloadSection(params: {
     params.downloadedRawPath,
   ];
 
-  if (hasYoutubeCookies()) {
-    args.push('--cookies', COOKIES_PATH);
+  const cookiesFile = params.cookiesFile ?? getActiveCookiesFilePath();
+  if (cookiesFile) {
+    args.push('--cookies', cookiesFile);
+  }
+  const proxyUrl = process.env.YTDLP_PROXY_URL?.trim();
+  if (proxyUrl) {
+    args.push('--proxy', proxyUrl);
   }
 
   args.push(params.sourceUrl);
-  try {
-    await execFileAsync(ytdlp, args, {
-      timeout: 140_000,
-      maxBuffer: 10 * 1024 * 1024,
-      signal: params.signal,
-    });
-  } catch (err) {
-    if (isAbortLikeError(err, params.signal)) {
-      throw new RenderCancelledError();
+
+  await new Promise<void>((resolve, reject) => {
+    if (params.signal?.aborted) {
+      reject(new RenderCancelledError());
+      return;
     }
-    throw err;
-  }
+
+    const child = spawn(ytdlp, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderrTail = '';
+    let settled = false;
+    let botCheckDetected = false;
+
+    const cleanup = () => {
+      clearTimeout(timeoutTimer);
+      params.signal?.removeEventListener('abort', onAbort);
+    };
+
+    const killChild = () => {
+      try {
+        child.kill('SIGTERM');
+      } catch {
+        // Ignore
+      }
+      setTimeout(() => {
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          // Ignore
+        }
+      }, 300);
+    };
+
+    const onAbort = () => {
+      killChild();
+      if (!settled) {
+        settled = true;
+        cleanup();
+        reject(new RenderCancelledError());
+      }
+    };
+
+    const timeoutTimer = setTimeout(() => {
+      killChild();
+      if (!settled) {
+        settled = true;
+        cleanup();
+        reject(new Error('yt-dlp timeout menunggu unduhan dari YouTube.'));
+      }
+    }, 75_000);
+
+    params.signal?.addEventListener('abort', onAbort, { once: true });
+
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderrTail = (stderrTail + chunk.toString('utf8')).slice(-4000);
+      if (!botCheckDetected && isBotBlockErrorText(stderrTail)) {
+        botCheckDetected = true;
+        killChild();
+        if (!settled) {
+          settled = true;
+          cleanup();
+          reject(
+            new YoutubeBotCheckError(
+              'YouTube memblokir unduhan langsung dari IP server cloud tanpa cookies. Unggah file .mp4, tempel link .mp4 langsung, atau pasang cookies.txt YouTube.'
+            )
+          );
+        }
+      }
+    });
+
+    child.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(params.signal?.aborted ? new RenderCancelledError() : err);
+    });
+
+    child.on('close', (code) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (params.signal?.aborted) {
+        reject(new RenderCancelledError());
+      } else if (code === 0) {
+        resolve();
+      } else if (isBotBlockErrorText(stderrTail)) {
+        reject(
+          new YoutubeBotCheckError(
+            'YouTube memblokir unduhan langsung dari IP server cloud tanpa cookies. Unggah file .mp4, tempel link .mp4 langsung, atau pasang cookies.txt YouTube.'
+          )
+        );
+      } else {
+        reject(new Error(`yt-dlp gagal (kode ${code}): ${stderrTail.slice(-260)}`));
+      }
+    });
+  });
 
   if (!fs.existsSync(params.downloadedRawPath)) {
     throw new Error('File potongan video dari YouTube tidak ditemukan setelah unduhan.');
@@ -699,8 +856,9 @@ async function acquireRawClipSegment(params: {
   rawSegmentPath: string;
   preferredQuality: CanonicalRenderQuality;
   signal?: AbortSignal;
+  onProgress?: (stage: string, progress: number) => void;
 }): Promise<ClipRenderSource> {
-  const { episode, clip, rawSegmentPath, preferredQuality, signal } = params;
+  const { episode, clip, rawSegmentPath, preferredQuality, signal, onProgress } = params;
   const durationSec = Math.max(5, clip.endSec - clip.startSec);
   const ytdlpTempPath = path.join(TMP_DIR, `ytdl_${clip.id}_${Date.now()}.mp4`);
   const chunkedTempPath = path.join(TMP_DIR, `chunked_${clip.id}_${Date.now()}.mp4`);
@@ -710,6 +868,7 @@ async function acquireRawClipSegment(params: {
     // 1. Uploaded / cached local source video
     const uploadedPath = getUploadedVideoPath(episode.id);
     if (uploadedPath) {
+      onProgress?.('Memotong segmen dari file video lokal...', 16);
       await extractRawTrimmedSegment({
         inputSource: uploadedPath,
         isRemoteUrl: false,
@@ -722,15 +881,33 @@ async function acquireRawClipSegment(params: {
       return 'uploaded_video';
     }
 
-    // 2. Saved valid cookies.txt with yt-dlp (direct native 1080p/4K when provided)
-    if (hasYoutubeCookies()) {
+    // 1B. Direct MP4 / media URL provided by user (bypasses YouTube entirely)
+    if (episode.directVideoUrl?.trim()) {
+      onProgress?.('Mengambil potongan langsung dari URL video sumber...', 16);
+      await extractRawTrimmedSegment({
+        inputSource: episode.directVideoUrl.trim(),
+        isRemoteUrl: true,
+        startSec: clip.startSec,
+        durationSec,
+        needSeekTrim: true,
+        outputPath: rawSegmentPath,
+        signal,
+      });
+      return 'direct_video_url';
+    }
+
+    // 2. Saved/Env valid cookies.txt with yt-dlp (direct native 1080p/4K)
+    const activeCookiesFile = getActiveCookiesFilePath();
+    if (activeCookiesFile) {
       try {
         throwIfAborted(signal);
+        onProgress?.('Mengunduh video HD asli via cookies YouTube...', 16);
         await tryYtDlpDownloadSection({
           sourceUrl: episode.sourceUrl,
           startSec: clip.startSec,
           endSec: clip.endSec,
           downloadedRawPath: ytdlpTempPath,
+          cookiesFile: activeCookiesFile,
           signal,
         });
         await extractRawTrimmedSegment({
@@ -745,48 +922,36 @@ async function acquireRawClipSegment(params: {
         return 'youtube_stream';
       } catch (err) {
         if (isAbortLikeError(err, signal)) throw new RenderCancelledError();
-        // Fall through to automatic HD downloader
+        // Fall through to parallel third-party HD downloader
       }
     }
 
-    // 3. Automatic native 1080p/4K SaveNow v2 + multi-worker fallback cascade
+    // 3. Single-pass parallel HD race (SaveNow + AMP4 + NoTube, capped ~25s worst-case)
     let thirdPartyErr: unknown = null;
-    for (let attempt = 0; attempt < 2; attempt++) {
+    throwIfAborted(signal);
+    onProgress?.('Mengunduh potongan video HD (SaveNow / AMP4 / NoTube)...', 15);
+    try {
+      const stream = await resolveThirdPartyMp4Stream({
+        sourceUrl: episode.sourceUrl,
+        videoId: episode.videoId,
+        startSec: clip.startSec,
+        endSec: clip.endSec,
+        preferredQuality,
+        signal,
+      });
       throwIfAborted(signal);
-      try {
-        const stream = await resolveThirdPartyMp4Stream({
-          sourceUrl: episode.sourceUrl,
-          videoId: episode.videoId,
-          startSec: clip.startSec,
-          endSec: clip.endSec,
-          preferredQuality,
-          skipCache: attempt > 0,
+
+      onProgress?.(`Menyiapkan stream ${stream.qualityTier ?? 'HD'} (${stream.provider})...`, 24);
+      if (stream.isDirectChunkedDownload || stream.isPreTrimmed) {
+        await downloadChunkedStreamToFile({
+          streamUrl: stream.streamUrl,
+          destPath: chunkedTempPath,
+          headers: stream.headers,
+          signal,
         });
-        throwIfAborted(signal);
-
-        if (stream.isDirectChunkedDownload) {
-          await downloadChunkedStreamToFile({
-            streamUrl: stream.streamUrl,
-            destPath: chunkedTempPath,
-            headers: stream.headers,
-            signal,
-          });
-          await extractRawTrimmedSegment({
-            inputSource: chunkedTempPath,
-            isRemoteUrl: false,
-            startSec: clip.startSec,
-            durationSec,
-            needSeekTrim: !stream.isPreTrimmed,
-            outputPath: rawSegmentPath,
-            signal,
-          });
-          return 'third_party_downloader';
-        }
-
         await extractRawTrimmedSegment({
-          inputSource: stream.streamUrl,
-          isRemoteUrl: true,
-          extraHeaders: stream.headers,
+          inputSource: chunkedTempPath,
+          isRemoteUrl: false,
           startSec: clip.startSec,
           durationSec,
           needSeekTrim: !stream.isPreTrimmed,
@@ -794,27 +959,49 @@ async function acquireRawClipSegment(params: {
           signal,
         });
         return 'third_party_downloader';
-      } catch (err) {
-        if (isAbortLikeError(err, signal)) {
-          if (fs.existsSync(chunkedTempPath)) fs.unlinkSync(chunkedTempPath);
-          if (fs.existsSync(rawSegmentPath)) fs.unlinkSync(rawSegmentPath);
-          throw new RenderCancelledError();
-        }
-        thirdPartyErr = err;
-        invalidateEpisodeStreamCache(episode.videoId || episode.sourceUrl);
+      }
+
+      await extractRawTrimmedSegment({
+        inputSource: stream.streamUrl,
+        isRemoteUrl: true,
+        extraHeaders: stream.headers,
+        startSec: clip.startSec,
+        durationSec,
+        needSeekTrim: !stream.isPreTrimmed,
+        outputPath: rawSegmentPath,
+        signal,
+      });
+      return 'third_party_downloader';
+    } catch (err) {
+      if (isAbortLikeError(err, signal)) {
         if (fs.existsSync(chunkedTempPath)) fs.unlinkSync(chunkedTempPath);
         if (fs.existsSync(rawSegmentPath)) fs.unlinkSync(rawSegmentPath);
+        throw new RenderCancelledError();
       }
+      thirdPartyErr = err;
+      invalidateEpisodeStreamCache(episode.videoId || episode.sourceUrl);
+      if (fs.existsSync(chunkedTempPath)) fs.unlinkSync(chunkedTempPath);
+      if (fs.existsSync(rawSegmentPath)) fs.unlinkSync(rawSegmentPath);
     }
 
-    // 4. Final fallback: unauthenticated yt-dlp attempt
+    // 4. Final fail-fast yt-dlp attempt (only if cookies path wasn't already tried)
+    const thirdMsg =
+      thirdPartyErr instanceof Error ? thirdPartyErr.message : String(thirdPartyErr ?? '');
+    if (activeCookiesFile) {
+      throw new YoutubeBotCheckError(
+        `Pengunduh otomatis gagal (${thirdMsg}) dan unduhan yt-dlp dengan cookies juga ditolak. Unggah file .mp4 atau perbarui cookies.txt YouTube.`
+      );
+    }
+
     throwIfAborted(signal);
+    onProgress?.('Mencoba jalur unduhan langsung YouTube...', 22);
     try {
       await tryYtDlpDownloadSection({
         sourceUrl: episode.sourceUrl,
         startSec: clip.startSec,
         endSec: clip.endSec,
         downloadedRawPath: ytdlpTempPath,
+        cookiesFile: null,
         signal,
       });
       await extractRawTrimmedSegment({
@@ -829,17 +1016,15 @@ async function acquireRawClipSegment(params: {
       return 'youtube_stream';
     } catch (ytErr) {
       if (isAbortLikeError(ytErr, signal)) throw new RenderCancelledError();
-      const stderr = (ytErr as { stderr?: string; message?: string })?.stderr ?? String(ytErr);
-      const thirdMsg =
-        thirdPartyErr instanceof Error ? thirdPartyErr.message : String(thirdPartyErr ?? '');
-
-      if (
-        stderr.includes('Sign in to confirm') ||
-        stderr.includes('bot') ||
-        stderr.includes('cookies')
-      ) {
+      if (ytErr instanceof YoutubeBotCheckError) {
         throw new YoutubeBotCheckError(
-          `Pengunduh otomatis gagal (${thirdMsg}) dan YouTube memblokir unduhan langsung tanpa cookies. Unggah file .mp4 sumber atau tempel cookies.txt sebagai alternatif.`
+          `Pengunduh otomatis gagal (${thirdMsg}) dan YouTube memblokir IP server cloud tanpa cookies. Unggah file .mp4, tempel link .mp4 langsung, atau pasang cookies.txt YouTube.`
+        );
+      }
+      const stderr = (ytErr as { stderr?: string; message?: string })?.stderr ?? String(ytErr);
+      if (isBotBlockErrorText(stderr)) {
+        throw new YoutubeBotCheckError(
+          `Pengunduh otomatis gagal (${thirdMsg}) dan YouTube memblokir unduhan langsung tanpa cookies. Unggah file .mp4, tempel link .mp4 langsung, atau pasang cookies.txt YouTube.`
         );
       }
       throw new Error(
@@ -856,13 +1041,24 @@ function cleanupOldTempSegments() {
   try {
     const cutoff = Date.now() - 45 * 60 * 1000;
     for (const entry of fs.readdirSync(TMP_DIR)) {
-      if (!entry.startsWith('seg_') && !entry.startsWith('intel_') && !entry.startsWith('render_')) {
+      if (
+        !entry.startsWith('seg_') &&
+        !entry.startsWith('intel_') &&
+        !entry.startsWith('render_') &&
+        !entry.startsWith('ytdl_') &&
+        !entry.startsWith('chunked_') &&
+        !entry.startsWith('work_')
+      ) {
         continue;
       }
       const full = path.join(TMP_DIR, entry);
       const st = fs.statSync(full);
       if (st.mtimeMs < cutoff) {
-        fs.unlinkSync(full);
+        if (st.isDirectory()) {
+          fs.rmSync(full, { recursive: true, force: true });
+        } else {
+          fs.unlinkSync(full);
+        }
       }
     }
   } catch {
@@ -1056,9 +1252,11 @@ export async function renderClipMp4(params: {
           rawReady = true;
           sourceUsed = getUploadedVideoPath(episode.id)
             ? 'uploaded_video'
-            : hasYoutubeCookies() && cachedMeta.height >= 720
-              ? 'youtube_stream'
-              : 'third_party_downloader';
+            : episode.directVideoUrl?.trim()
+              ? 'direct_video_url'
+              : hasYoutubeCookies() && cachedMeta.height >= 720
+                ? 'youtube_stream'
+                : 'third_party_downloader';
         }
       } catch {
         fs.unlinkSync(cachedRawSegmentPath);
@@ -1079,6 +1277,7 @@ export async function renderClipMp4(params: {
         rawSegmentPath: cachedRawSegmentPath,
         preferredQuality: quality,
         signal: params.signal,
+        onProgress: params.onProgress,
       });
     } else {
       params.onProgress?.('Memakai cache potongan video HD asli...', 28);
@@ -1126,8 +1325,9 @@ export async function renderClipMp4(params: {
       intelligence,
     });
 
+    const hasAudioStream = Boolean(rawMeta.audioCodec);
     const emotionAudioGraph =
-      enableEmotionEffects && intelligence.emotionMoments.length > 0
+      hasAudioStream && enableEmotionEffects && intelligence.emotionMoments.length > 0
         ? buildEmotionAudioFilterGraph(intelligence.emotionMoments)
         : null;
 
@@ -1150,14 +1350,19 @@ export async function renderClipMp4(params: {
     // High-bitrate YouTube Shorts mastering (CRF 18 High Profile):
     // Both <video> streaming AND browser downloads use 4 MiB chunked HTTP Range requests,
     // so large crisp master files (10 Mbps 1080p / 22 Mbps 4K) stream & download cleanly without any 32MB cap!
-    const encodePreset = quality === '4k' ? 'superfast' : 'veryfast';
+    const encodePreset = CPU_COUNT <= 2 || quality === '4k' ? 'ultrafast' : 'veryfast';
     const encodeCrf = '18';
     const encodeMaxrate = quality === '4k' ? '22000k' : '10000k';
     const encodeBufsize = quality === '4k' ? '44000k' : '20000k';
     const encodeLevel = quality === '4k' ? '5.1' : '4.2';
-    const audioMapTarget = emotionAudioGraph ? emotionAudioGraph.outputLabel : '0:a';
-    const audioArgs =
-      !emotionAudioGraph && rawMeta.audioCodec === 'aac' && rawMeta.syncHealth.isSynced
+    const audioMapTarget = !hasAudioStream
+      ? '0:a?'
+      : emotionAudioGraph
+        ? emotionAudioGraph.outputLabel
+        : '0:a';
+    const audioArgs = !hasAudioStream
+      ? []
+      : !emotionAudioGraph && rawMeta.audioCodec === 'aac' && rawMeta.syncHealth.isSynced
         ? ['-c:a', 'copy']
         : !emotionAudioGraph
           ? ['-af', 'asetpts=PTS-STARTPTS,aresample=async=1:first_pts=0', '-c:a', 'aac', '-b:a', '192k']

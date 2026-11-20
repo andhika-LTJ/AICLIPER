@@ -5,6 +5,7 @@ import {
   extractNotubeServerIds,
   formatAmp4TrimArg,
   getQualityRank,
+  isBotBlockErrorText,
   normalizeThirdPartyMediaUrl,
   solveAltchaChallenge,
   solveSaveNowPow,
@@ -29,7 +30,6 @@ interface CachedStreamEntry {
 
 const STREAM_CACHE_TTL_MS = 14 * 60 * 1000;
 const SERVER_POOL_TTL_MS = 10 * 60 * 1000;
-const HD_PRIORITY_WINDOW_MS = 14_000;
 const BROWSER_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
@@ -51,6 +51,42 @@ const inFlightResolutions = new Map<string, Promise<ResolvedThirdPartyStream>>()
 let cachedServerPool: { ids: number[]; expiresAt: number } | null = null;
 let cachedSaveNowToken: { token: string; expiresAtMs: number } | null = null;
 let saveNowTokenInFlight: Promise<string> | null = null;
+
+function combineSignal(timeoutMs: number, signal?: AbortSignal): AbortSignal {
+  const timeoutSig = AbortSignal.timeout(timeoutMs);
+  return signal ? AbortSignal.any([timeoutSig, signal]) : timeoutSig;
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    const err = new Error('Proses dibatalkan.');
+    err.name = 'AbortError';
+    throw err;
+  }
+}
+
+function sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      const err = new Error('Proses dibatalkan.');
+      err.name = 'AbortError';
+      reject(err);
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      const err = new Error('Proses dibatalkan.');
+      err.name = 'AbortError';
+      reject(err);
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
 
 function getCacheKey(videoIdOrUrl: string): string {
   return extractYouTubeVideoId(videoIdOrUrl) ?? videoIdOrUrl.trim();
@@ -77,7 +113,7 @@ function updateEpisodeStreamCache(key: string, candidate: ResolvedThirdPartyStre
   });
 }
 
-async function getSaveNowBearerToken(forceRefresh = false): Promise<string> {
+async function getSaveNowBearerToken(forceRefresh = false, signal?: AbortSignal): Promise<string> {
   if (!forceRefresh && cachedSaveNowToken && cachedSaveNowToken.expiresAtMs - 30_000 > Date.now()) {
     return cachedSaveNowToken.token;
   }
@@ -88,7 +124,7 @@ async function getSaveNowBearerToken(forceRefresh = false): Promise<string> {
   const mint = (async (): Promise<string> => {
     const chRes = await fetch(`${SAVENOW_HOST}/api/pow/challenge`, {
       headers: SAVENOW_HEADERS,
-      signal: AbortSignal.timeout(10_000),
+      signal: combineSignal(8_000, signal),
     });
     if (!chRes.ok) {
       throw new Error(`SaveNow PoW challenge HTTP ${chRes.status}`);
@@ -118,7 +154,7 @@ async function getSaveNowBearerToken(forceRefresh = false): Promise<string> {
         signature: ch.signature,
         nonce,
       }),
-      signal: AbortSignal.timeout(10_000),
+      signal: combineSignal(8_000, signal),
     });
     if (!vrRes.ok) {
       throw new Error(`SaveNow PoW verify HTTP ${vrRes.status}`);
@@ -157,8 +193,10 @@ async function resolveViaSaveNow(
   format: '4k' | '1080' | '720',
   startSec?: number,
   endSec?: number,
-  maxWaitMs = 55_000
+  maxWaitMs = 22_000,
+  signal?: AbortSignal
 ): Promise<ResolvedThirdPartyStream> {
+  throwIfAborted(signal);
   const hasTrim =
     typeof startSec === 'number' && typeof endSec === 'number' && endSec > startSec;
   const query = new URLSearchParams({
@@ -172,23 +210,23 @@ async function resolveViaSaveNow(
     query.set('end_time', String(Math.max(Math.floor(startSec) + 5, Math.ceil(endSec))));
   }
 
-  let token = await getSaveNowBearerToken(false);
+  let token = await getSaveNowBearerToken(false, signal);
   let initRes = await fetch(`${SAVENOW_HOST}/api/v2/download?${query.toString()}`, {
     headers: {
       ...SAVENOW_HEADERS,
       Authorization: `Bearer ${token}`,
     },
-    signal: AbortSignal.timeout(15_000),
+    signal: combineSignal(10_000, signal),
   });
 
   if (initRes.status === 401 || initRes.status === 403) {
-    token = await getSaveNowBearerToken(true);
+    token = await getSaveNowBearerToken(true, signal);
     initRes = await fetch(`${SAVENOW_HOST}/api/v2/download?${query.toString()}`, {
       headers: {
         ...SAVENOW_HEADERS,
         Authorization: `Bearer ${token}`,
       },
-      signal: AbortSignal.timeout(15_000),
+      signal: combineSignal(10_000, signal),
     });
   }
 
@@ -212,12 +250,17 @@ async function resolveViaSaveNow(
 
   const deadline = Date.now() + maxWaitMs;
   while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, 1800));
+    await sleepAbortable(1400, signal);
     const progRes = await fetch(progressUrl, {
       headers: SAVENOW_HEADERS,
-      signal: AbortSignal.timeout(10_000),
+      signal: combineSignal(8_000, signal),
     });
-    if (!progRes.ok) continue;
+    if (!progRes.ok) {
+      if (progRes.status === 403 || progRes.status === 429) {
+        throw new Error(`SaveNow ${format} dibatasi (HTTP ${progRes.status}).`);
+      }
+      continue;
+    }
 
     const prog = (await progRes.json()) as {
       success?: number;
@@ -243,8 +286,9 @@ async function resolveViaSaveNow(
     if (prog.success === 1 && !prog.download_url) {
       throw new Error(prog.text || prog.message || `SaveNow ${format} selesai tanpa URL unduhan.`);
     }
-    if (prog.text && /error|fail|unavailable|exceed/i.test(prog.text)) {
-      throw new Error(`SaveNow ${format} gagal: ${prog.text}`);
+    const statusText = `${prog.text ?? ''} ${prog.message ?? ''}`.trim();
+    if (statusText && (/error|fail|unavailable|exceed/i.test(statusText) || isBotBlockErrorText(statusText))) {
+      throw new Error(`SaveNow ${format} gagal: ${statusText}`);
     }
   }
 
@@ -253,7 +297,8 @@ async function resolveViaSaveNow(
 
 async function verifyStreamReachable(
   streamUrl: string,
-  extraHeaders?: Record<string, string>
+  extraHeaders?: Record<string, string>,
+  signal?: AbortSignal
 ): Promise<boolean> {
   try {
     const res = await fetch(streamUrl, {
@@ -263,7 +308,7 @@ async function verifyStreamReachable(
         Range: 'bytes=0-1023',
         ...(extraHeaders ?? {}),
       },
-      signal: AbortSignal.timeout(6000),
+      signal: combineSignal(6000, signal),
     });
     const ok = res.ok || res.status === 206;
     await res.body?.cancel();
@@ -273,14 +318,14 @@ async function verifyStreamReachable(
   }
 }
 
-async function getNotubeServerPool(): Promise<number[]> {
+async function getNotubeServerPool(signal?: AbortSignal): Promise<number[]> {
   if (cachedServerPool && cachedServerPool.expiresAt > Date.now()) {
     return cachedServerPool.ids;
   }
   try {
     const res = await fetch('https://notube.net/en/youtube-app-459', {
       headers: { 'User-Agent': BROWSER_UA },
-      signal: AbortSignal.timeout(6000),
+      signal: combineSignal(5000, signal),
     });
     if (res.ok) {
       const html = await res.text();
@@ -294,11 +339,11 @@ async function getNotubeServerPool(): Promise<number[]> {
   return [60, 61, 59, 62, 63, 64, 58, 65, 57, 66];
 }
 
-async function isNotubeServerHealthy(serverId: number): Promise<boolean> {
+async function isNotubeServerHealthy(serverId: number, signal?: AbortSignal): Promise<boolean> {
   try {
     const res = await fetch(`https://s${serverId}.notube.net/weight.php`, {
       headers: { 'User-Agent': BROWSER_UA },
-      signal: AbortSignal.timeout(2500),
+      signal: combineSignal(2500, signal),
     });
     return res.ok;
   } catch {
@@ -310,9 +355,11 @@ async function resolveSingleNotubeWorker(
   serverId: number,
   canonicalUrl: string,
   format: 'mp4hd' | 'mp4',
-  recoverTimeoutMs: number
+  recoverTimeoutMs: number,
+  signal?: AbortSignal
 ): Promise<ResolvedThirdPartyStream> {
-  const healthy = await isNotubeServerHealthy(serverId);
+  throwIfAborted(signal);
+  const healthy = await isNotubeServerHealthy(serverId, signal);
   if (!healthy) {
     throw new Error(`s${serverId} unhealthy`);
   }
@@ -332,7 +379,7 @@ async function resolveSingleNotubeWorker(
       lang: 'en',
       subscribed: 'false',
     }),
-    signal: AbortSignal.timeout(10_000),
+    signal: combineSignal(8_000, signal),
   });
 
   if (!rwRes.ok) {
@@ -370,7 +417,7 @@ async function resolveSingleNotubeWorker(
       playlist: 'false',
       adblock: 'false',
     }),
-    signal: AbortSignal.timeout(recoverTimeoutMs),
+    signal: combineSignal(recoverTimeoutMs, signal),
   });
 
   if (!rfRes.ok) {
@@ -378,7 +425,7 @@ async function resolveSingleNotubeWorker(
   }
 
   const rfText = (await rfRes.text()).trim();
-  if (rfText.includes('cf-turnstile')) {
+  if (isBotBlockErrorText(rfText)) {
     throw new Error(`s${serverId}/${format} turnstile challenge`);
   }
 
@@ -401,7 +448,7 @@ async function resolveSingleNotubeWorker(
     `https://notube.net/en/download?token=${encodeURIComponent(finalToken)}`,
     {
       headers: { 'User-Agent': BROWSER_UA },
-      signal: AbortSignal.timeout(8_000),
+      signal: combineSignal(7_000, signal),
     }
   );
   if (!dlPageRes.ok) {
@@ -415,7 +462,7 @@ async function resolveSingleNotubeWorker(
   }
 
   const dlUrl = normalizeThirdPartyMediaUrl(rawDlUrl);
-  const reachable = await verifyStreamReachable(dlUrl);
+  const reachable = await verifyStreamReachable(dlUrl, undefined, signal);
   if (!reachable) {
     throw new Error(`s${serverId}/${format} download URL unreachable`);
   }
@@ -430,21 +477,25 @@ async function resolveSingleNotubeWorker(
 
 /**
  * Races 3 independent NoTube worker nodes in parallel instead of trying them serially,
- * cutting download setup latency by up to 3x and bypassing slow/Turnstile nodes automatically.
+ * cutting download setup latency by up to 3x and cancelling losing nodes as soon as one wins.
  */
 async function resolveViaNotube(
   canonicalUrl: string,
   format: 'mp4hd' | 'mp4' = 'mp4',
-  recoverTimeoutMs = 26_000
+  recoverTimeoutMs = 18_000,
+  signal?: AbortSignal
 ): Promise<ResolvedThirdPartyStream> {
-  const pool = await getNotubeServerPool();
+  const pool = await getNotubeServerPool(signal);
   const shuffled = [...pool].sort(() => Math.random() - 0.5);
   const parallelWorkers = shuffled.slice(0, 3);
+  const raceController = new AbortController();
+  const onParentAbort = () => raceController.abort();
+  signal?.addEventListener('abort', onParentAbort, { once: true });
 
   try {
     return await Promise.any(
       parallelWorkers.map((serverId) =>
-        resolveSingleNotubeWorker(serverId, canonicalUrl, format, recoverTimeoutMs)
+        resolveSingleNotubeWorker(serverId, canonicalUrl, format, recoverTimeoutMs, raceController.signal)
       )
     );
   } catch (err) {
@@ -453,6 +504,9 @@ async function resolveViaNotube(
         ? err.errors.map((e) => (e instanceof Error ? e.message : String(e))).join('; ')
         : String(err);
     throw new Error(`NoTube (${format}) gagal: ${details}`);
+  } finally {
+    raceController.abort();
+    signal?.removeEventListener('abort', onParentAbort);
   }
 }
 
@@ -461,11 +515,13 @@ async function resolveViaAmp4(
   quality: '1080p' | '720p' | '480p' | '360p',
   startSec?: number,
   endSec?: number,
-  maxWaitMs = 28_000
+  maxWaitMs = 20_000,
+  signal?: AbortSignal
 ): Promise<ResolvedThirdPartyStream> {
+  throwIfAborted(signal);
   const homeRes = await fetch('https://amp4.cc/', {
     headers: { 'User-Agent': BROWSER_UA },
-    signal: AbortSignal.timeout(8_000),
+    signal: combineSignal(7_000, signal),
   });
   if (!homeRes.ok) {
     throw new Error(`AMP4 homepage HTTP ${homeRes.status}`);
@@ -474,6 +530,9 @@ async function resolveViaAmp4(
   const rawCookies = homeRes.headers.getSetCookie?.() ?? [];
   const cookies = rawCookies.map((c) => c.split(';')[0]).join('; ');
   const html = await homeRes.text();
+  if (isBotBlockErrorText(html)) {
+    throw new Error('AMP4 diblokir tantangan anti-bot.');
+  }
   const csrf = html.match(/name="csrf-token"\s+content="([^"]+)"/)?.[1];
   if (!csrf || !cookies) {
     throw new Error('AMP4 CSRF/session token tidak ditemukan.');
@@ -485,7 +544,7 @@ async function resolveViaAmp4(
       'User-Agent': BROWSER_UA,
       Accept: 'application/json',
     },
-    signal: AbortSignal.timeout(8_000),
+    signal: combineSignal(7_000, signal),
   });
   if (!chRes.ok) {
     throw new Error(`AMP4 captcha HTTP ${chRes.status}`);
@@ -516,7 +575,7 @@ async function resolveViaAmp4(
       Referer: 'https://amp4.cc/',
     },
     body: fd,
-    signal: AbortSignal.timeout(12_000),
+    signal: combineSignal(10_000, signal),
   });
 
   const convJson = (await convRes.json()) as {
@@ -531,7 +590,7 @@ async function resolveViaAmp4(
 
   const deadline = Date.now() + maxWaitMs;
   while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, 1800));
+    await sleepAbortable(1400, signal);
     const stRes = await fetch(`https://amp4.cc/status?token=${encodeURIComponent(jobToken)}`, {
       headers: {
         Cookie: cookies,
@@ -539,9 +598,14 @@ async function resolveViaAmp4(
         'User-Agent': BROWSER_UA,
         Referer: 'https://amp4.cc/',
       },
-      signal: AbortSignal.timeout(8_000),
+      signal: combineSignal(7_000, signal),
     });
-    if (!stRes.ok) continue;
+    if (!stRes.ok) {
+      if (stRes.status === 403 || stRes.status === 429) {
+        throw new Error(`AMP4 ${quality} dibatasi (HTTP ${stRes.status}).`);
+      }
+      continue;
+    }
 
     const stJson = (await stRes.json()) as {
       data?: {
@@ -560,7 +624,7 @@ async function resolveViaAmp4(
     if (isFinished && rawDlUrl) {
       const dlUrl = normalizeThirdPartyMediaUrl(rawDlUrl);
       const headers = { Referer: 'https://amp4.cc/', Cookie: cookies };
-      if (await verifyStreamReachable(dlUrl, headers)) {
+      if (await verifyStreamReachable(dlUrl, headers, signal)) {
         return {
           streamUrl: dlUrl,
           provider: 'amp4',
@@ -578,11 +642,23 @@ async function resolveViaAmp4(
   throw new Error(`AMP4 ${quality} timeout menunggu konversi.`);
 }
 
+async function runDelayedRaceBranch(
+  delayMs: number,
+  signal: AbortSignal,
+  fn: () => Promise<ResolvedThirdPartyStream>
+): Promise<ResolvedThirdPartyStream> {
+  if (delayMs > 0) {
+    await sleepAbortable(delayMs, signal);
+  }
+  throwIfAborted(signal);
+  return fn();
+}
+
 /**
- * Resolves a downloadable MP4 stream URL prioritizing TRUE native 1080p/4K streams first.
- * 1. Primary HD engine: SaveNow v2 PoW API with server-side exact segment trimming (`start_time`/`end_time`)
- *    delivering native 1920x1080 / 4K H.264 + AAC streams with zero cookies or API keys.
- * 2. Fallback engine: Parallel NoTube + AMP4 multi-worker cascade if SaveNow is unavailable.
+ * Resolves a downloadable MP4 stream URL in a fast parallel, fail-fast cascade:
+ * - Prioritizes requested 1080p/4K HD streams first via staggered parallel racing (zero 135s+ serial waits).
+ * - Immediately aborts losing branches once the fastest HD stream succeeds or user cancels.
+ * - Falls back smoothly to 720p/480p/360p only after a short HD priority window.
  */
 export async function resolveThirdPartyMp4Stream(params: {
   sourceUrl: string;
@@ -591,7 +667,9 @@ export async function resolveThirdPartyMp4Stream(params: {
   endSec?: number;
   preferredQuality?: '1080p' | '4k';
   skipCache?: boolean;
+  signal?: AbortSignal;
 }): Promise<ResolvedThirdPartyStream> {
+  throwIfAborted(params.signal);
   const key = getCacheKey(params.videoId || params.sourceUrl);
   const canonicalUrl = buildCanonicalWatchUrl(params.videoId || params.sourceUrl);
   const hasTrim =
@@ -602,7 +680,11 @@ export async function resolveThirdPartyMp4Stream(params: {
   if (!params.skipCache && !hasTrim) {
     const cached = streamCache.get(key);
     if (cached && cached.expiresAt > Date.now()) {
-      const ok = await verifyStreamReachable(cached.stream.streamUrl, cached.stream.headers);
+      const ok = await verifyStreamReachable(
+        cached.stream.streamUrl,
+        cached.stream.headers,
+        params.signal
+      );
       if (ok) {
         return cached.stream;
       }
@@ -616,73 +698,91 @@ export async function resolveThirdPartyMp4Stream(params: {
   }
 
   const work = (async (): Promise<ResolvedThirdPartyStream> => {
-    const errors: string[] = [];
+    const raceController = new AbortController();
+    const onExternalAbort = () => raceController.abort();
+    params.signal?.addEventListener('abort', onExternalAbort, { once: true });
 
-    // 1. Primary true-HD engine: SaveNow v2 pre-trimmed native 4K / 1080p / 720p stream
-    if (hasTrim) {
-      const saveNowFormats: Array<'4k' | '1080' | '720'> =
-        params.preferredQuality === '4k' ? ['4k', '1080', '720'] : ['1080', '720'];
-
-      for (const fmt of saveNowFormats) {
-        try {
-          return await resolveViaSaveNow(
-            canonicalUrl,
-            fmt,
-            params.startSec,
-            params.endSec,
-            fmt === '4k' ? 35_000 : 50_000
-          );
-        } catch (err) {
-          errors.push(err instanceof Error ? err.message : String(err));
-        }
-      }
-    }
-
-    // 2. Fallback parallel HD workers (NoTube mp4hd + AMP4 1080p/720p trimmed)
-    const hdCandidates: Promise<ResolvedThirdPartyStream>[] = [
-      resolveViaNotube(canonicalUrl, 'mp4hd', 45_000),
-      resolveViaAmp4(canonicalUrl, '1080p', params.startSec, params.endSec, 32_000),
-      resolveViaAmp4(canonicalUrl, '720p', params.startSec, params.endSec, 32_000),
-    ];
-
-    const hdRace = Promise.any(hdCandidates);
-    hdRace
-      .then((hdStream) => updateEpisodeStreamCache(key, hdStream))
-      .catch(() => {
-        // Handled below via fallback race
-      });
-
-    const hdWindowResult = await Promise.race<ResolvedThirdPartyStream | 'HD_WINDOW_ELAPSED'>([
-      hdRace.catch(() => 'HD_WINDOW_ELAPSED' as const),
-      new Promise<'HD_WINDOW_ELAPSED'>((resolve) =>
-        setTimeout(() => resolve('HD_WINDOW_ELAPSED'), HD_PRIORITY_WINDOW_MS)
-      ),
-    ]);
-
-    if (hdWindowResult !== 'HD_WINDOW_ELAPSED') {
-      updateEpisodeStreamCache(key, hdWindowResult);
-      return hdWindowResult;
-    }
-
-    // 3. Final fallback race (NoTube mp4 + AMP4 480p/360p)
     try {
-      const winner = await Promise.any([
-        hdRace,
-        resolveViaNotube(canonicalUrl, 'mp4', 24_000),
-        resolveViaAmp4(canonicalUrl, '480p', params.startSec, params.endSec, 28_000),
-        resolveViaAmp4(canonicalUrl, '360p', params.startSec, params.endSec, 28_000),
-      ]);
+      const sig = raceController.signal;
+      const is4k = params.preferredQuality === '4k';
+      const branches: Promise<ResolvedThirdPartyStream>[] = [];
+
+      if (hasTrim) {
+        if (is4k) {
+          // Give 4K SaveNow a 3s head-start, then race 1080p & 720p workers concurrently
+          branches.push(
+            runDelayedRaceBranch(0, sig, () =>
+              resolveViaSaveNow(canonicalUrl, '4k', params.startSec, params.endSec, 20_000, sig)
+            ),
+            runDelayedRaceBranch(3_000, sig, () =>
+              resolveViaSaveNow(canonicalUrl, '1080', params.startSec, params.endSec, 22_000, sig)
+            ),
+            runDelayedRaceBranch(3_000, sig, () =>
+              resolveViaAmp4(canonicalUrl, '1080p', params.startSec, params.endSec, 20_000, sig)
+            ),
+            runDelayedRaceBranch(4_500, sig, () =>
+              resolveViaSaveNow(canonicalUrl, '720', params.startSec, params.endSec, 18_000, sig)
+            )
+          );
+        } else {
+          // Default 1080p: race SaveNow 1080p + AMP4 1080p immediately, then 720p/NoTube after 3.5s
+          branches.push(
+            runDelayedRaceBranch(0, sig, () =>
+              resolveViaSaveNow(canonicalUrl, '1080', params.startSec, params.endSec, 22_000, sig)
+            ),
+            runDelayedRaceBranch(0, sig, () =>
+              resolveViaAmp4(canonicalUrl, '1080p', params.startSec, params.endSec, 20_000, sig)
+            ),
+            runDelayedRaceBranch(3_500, sig, () =>
+              resolveViaSaveNow(canonicalUrl, '720', params.startSec, params.endSec, 18_000, sig)
+            ),
+            runDelayedRaceBranch(3_500, sig, () =>
+              resolveViaAmp4(canonicalUrl, '720p', params.startSec, params.endSec, 18_000, sig)
+            )
+          );
+        }
+      } else {
+        branches.push(
+          runDelayedRaceBranch(0, sig, () =>
+            resolveViaAmp4(canonicalUrl, '1080p', undefined, undefined, 20_000, sig)
+          ),
+          runDelayedRaceBranch(1_500, sig, () =>
+            resolveViaAmp4(canonicalUrl, '720p', undefined, undefined, 18_000, sig)
+          )
+        );
+      }
+
+      // Parallel NoTube HD + staggered SD fallback so failure caps cleanly around ~25s instead of 177s
+      branches.push(
+        runDelayedRaceBranch(1_500, sig, () => resolveViaNotube(canonicalUrl, 'mp4hd', 18_000, sig)),
+        runDelayedRaceBranch(9_000, sig, () => resolveViaNotube(canonicalUrl, 'mp4', 15_000, sig)),
+        runDelayedRaceBranch(9_000, sig, () =>
+          resolveViaAmp4(canonicalUrl, '480p', params.startSec, params.endSec, 15_000, sig)
+        ),
+        runDelayedRaceBranch(10_000, sig, () =>
+          resolveViaAmp4(canonicalUrl, '360p', params.startSec, params.endSec, 15_000, sig)
+        )
+      );
+
+      const winner = await Promise.any(branches);
       updateEpisodeStreamCache(key, winner);
       return winner;
     } catch (aggErr) {
+      throwIfAborted(params.signal);
       const details =
         aggErr instanceof AggregateError
-          ? aggErr.errors.map((e) => (e instanceof Error ? e.message : String(e))).join(' | ')
+          ? aggErr.errors
+              .map((e) => (e instanceof Error ? e.message : String(e)))
+              .filter((m) => m !== 'Proses dibatalkan.')
+              .slice(0, 4)
+              .join(' | ')
           : aggErr instanceof Error
             ? aggErr.message
             : String(aggErr);
-      const prefix = errors.length > 0 ? `${errors.join(' | ')} | ` : '';
-      throw new Error(`Semua pengunduh otomatis gagal (${prefix}${details})`);
+      throw new Error(`Semua pengunduh otomatis gagal (${details || 'timeout/diblokir'})`);
+    } finally {
+      raceController.abort();
+      params.signal?.removeEventListener('abort', onExternalAbort);
     }
   })();
 
@@ -709,4 +809,3 @@ export async function prewarmEpisodeStream(_sourceUrl: string, _videoId?: string
     // Silent background warmup failure; explicit render will retry gracefully
   }
 }
-
