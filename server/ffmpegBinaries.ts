@@ -2,6 +2,8 @@ import { spawnSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { Readable } from 'stream';
+import { pipeline } from 'stream/promises';
 import zlib from 'zlib';
 
 export type MediaBinaryName = 'ffmpeg' | 'ffprobe';
@@ -345,24 +347,38 @@ async function downloadAndInstallStaticBinary(
       });
       if (!res.ok) continue;
 
-      const rawBuf = Buffer.from(await res.arrayBuffer());
-      if (rawBuf.byteLength < 1_000_000) continue;
-
-      let binaryBuf: Buffer;
-      if (spec.archiveType === 'gzip') {
-        binaryBuf = zlib.gunzipSync(rawBuf);
-      } else if (spec.archiveType === 'zip') {
-        binaryBuf = extractSingleFileFromZipBuffer(
-          rawBuf,
-          spec.entryName ?? (process.platform === 'win32' ? `${binary}.exe` : binary)
+      if (spec.archiveType === 'gzip' && res.body) {
+        // Stream gunzip directly to disk (~2 MB RAM instead of ~110 MB peak heap)
+        await pipeline(
+          Readable.fromWeb(res.body as unknown as Parameters<typeof Readable.fromWeb>[0]),
+          zlib.createGunzip(),
+          fs.createWriteStream(tmpPath, { mode: 0o755 })
         );
+        const st = fs.statSync(tmpPath);
+        if (st.size < 1_000_000) {
+          fs.unlinkSync(tmpPath);
+          continue;
+        }
       } else {
-        binaryBuf = rawBuf;
+        const rawBuf = Buffer.from(await res.arrayBuffer());
+        if (rawBuf.byteLength < 1_000_000) continue;
+
+        let binaryBuf: Buffer;
+        if (spec.archiveType === 'gzip') {
+          binaryBuf = zlib.gunzipSync(rawBuf);
+        } else if (spec.archiveType === 'zip') {
+          binaryBuf = extractSingleFileFromZipBuffer(
+            rawBuf,
+            spec.entryName ?? (process.platform === 'win32' ? `${binary}.exe` : binary)
+          );
+        } else {
+          binaryBuf = rawBuf;
+        }
+
+        if (binaryBuf.byteLength < 1_000_000) continue;
+        fs.writeFileSync(tmpPath, binaryBuf, { mode: 0o755 });
       }
 
-      if (binaryBuf.byteLength < 1_000_000) continue;
-
-      fs.writeFileSync(tmpPath, binaryBuf, { mode: 0o755 });
       fs.renameSync(tmpPath, targetPath);
       if (process.platform !== 'win32') {
         fs.chmodSync(targetPath, 0o755);
@@ -468,10 +484,9 @@ export async function ensureFfprobePath(): Promise<string> {
  * even in minimal Cloud Run containers where neither is installed on system PATH.
  */
 export async function ensureYtDlpFfmpegLocation(): Promise<string> {
-  const [ffmpegPath, ffprobePath] = await Promise.all([
-    ensureFfmpegPath(),
-    ensureFfprobePath(),
-  ]);
+  // Resolve sequentially to keep peak container RAM minimal during first-render cold download
+  const ffmpegPath = await ensureFfmpegPath();
+  const ffprobePath = await ensureFfprobePath();
 
   const ext = process.platform === 'win32' ? '.exe' : '';
   if (

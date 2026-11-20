@@ -22,7 +22,6 @@ import {
   getUploadTargetPath,
   hasYoutubeCookies,
   invalidateLowResSegmentCache,
-  prewarmYtDlpBinary,
   RenderCancelledError,
   renderClipMp4,
   saveYoutubeCookies,
@@ -45,7 +44,6 @@ import {
 import {
   getAvailableFfmpegPathSync,
   getAvailableFfprobePathSync,
-  prewarmMediaBinaries,
 } from './server/ffmpegBinaries.ts';
 
 async function startServer() {
@@ -1063,8 +1061,6 @@ async function startServer() {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`KlipCast server listening on http://localhost:${PORT}`);
-    void prewarmMediaBinaries();
-    void prewarmYtDlpBinary();
   });
 }
 

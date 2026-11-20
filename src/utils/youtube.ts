@@ -1,4 +1,4 @@
-import type { PodcastClip, SocialPlatform } from '../types/clipper';
+import type { PodcastClip, SocialPlatform } from '../types/clipper.ts';
 
 /**
  * Extracts an 11-character YouTube video ID from standard watch, short, live, embed, or youtu.be URLs.
