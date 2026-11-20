@@ -1,5 +1,5 @@
-import type { StudioStoreState } from '../types/clipper';
-import { resolveAssetUrl } from '../utils/assetUrl';
+import type { StudioStoreState } from '../types/clipper.ts';
+import { resolveAssetUrl } from '../utils/assetUrl.ts';
 
 export const SAMPLE_PODCAST_PRESETS = [
   {
