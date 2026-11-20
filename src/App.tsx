@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { User } from 'firebase/auth';
+import type { User } from '@firebase/auth';
 import { AutomationSettingsView } from './components/AutomationSettingsView';
 import { ClipListPanel } from './components/ClipListPanel';
 import { ClipPublisherPanel } from './components/ClipPublisherPanel';

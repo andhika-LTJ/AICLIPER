@@ -1,5 +1,6 @@
 import { GoogleGenAI, Type, ThinkingLevel } from '@google/genai';
 import type { PodcastClip, PodcastEpisode, SocialPlatform } from '../src/types/clipper.ts';
+import { resolveAssetUrl } from '../src/utils/assetUrl.ts';
 import { clampClipRange, formatGeminiErrorMessage, formatTimestamp } from '../src/utils/youtube.ts';
 
 interface TranscriptSegment {
@@ -464,7 +465,7 @@ Kriteria Pemilihan Momen Viral & Output WAJIB:
     title: ctx.title,
     channelName: ctx.channelName,
     thumbnailUrl: ctx.thumbnailUrl,
-    fallbackImageUrl: '/src/assets/images/podcast_creator_desk_1794847027324.jpg',
+    fallbackImageUrl: resolveAssetUrl('/src/assets/images/podcast_creator_desk_1794847027324.jpg'),
     durationSec: ctx.durationSec,
     transcriptSource: ctx.transcriptSource,
     episodeSummary: parsed.episodeSummary,

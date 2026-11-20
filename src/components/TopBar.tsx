@@ -1,4 +1,4 @@
-import type { User } from 'firebase/auth';
+import type { User } from '@firebase/auth';
 import { LogOut, Scissors } from 'lucide-react';
 import { GoogleAccountBadge, GoogleSignInButton } from './GoogleSignInButton';
 

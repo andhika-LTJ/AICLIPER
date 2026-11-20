@@ -1,4 +1,5 @@
 import type { StudioStoreState } from '../types/clipper';
+import { resolveAssetUrl } from '../utils/assetUrl';
 
 export const SAMPLE_PODCAST_PRESETS = [
   {
@@ -23,8 +24,8 @@ export const INITIAL_STUDIO_STATE: StudioStoreState = {
       sourceUrl: 'https://www.youtube.com/watch?v=aircAruvnKk',
       title: 'Strategi Konten Podcast: Mengubah Diskusi 90 Menit Menjadi Klip Shorts Berdampak',
       channelName: 'Ruang Bicara Studio',
-      thumbnailUrl: '/src/assets/images/podcast_studio_tech_1794847026161.jpg',
-      fallbackImageUrl: '/src/assets/images/podcast_studio_tech_1794847026161.jpg',
+      thumbnailUrl: resolveAssetUrl('/src/assets/images/podcast_studio_tech_1794847026161.jpg'),
+      fallbackImageUrl: resolveAssetUrl('/src/assets/images/podcast_studio_tech_1794847026161.jpg'),
       durationSec: 2840,
       transcriptSource: 'curated_sample',
       episodeSummary:

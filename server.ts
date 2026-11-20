@@ -2,7 +2,6 @@ import 'dotenv/config';
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
-import { createServer as createViteServer } from 'vite';
 import { INITIAL_STUDIO_STATE } from './src/data/seedPodcasts.ts';
 import type {
   ClipRenderLayout,
@@ -44,9 +43,9 @@ import {
   verifyFirebaseGoogleIdToken,
 } from './server/googleAuthVerifier.ts';
 import {
-  getFfmpegPath,
-  getFfprobePath,
-  getYtDlpFfmpegLocation,
+  getAvailableFfmpegPathSync,
+  getAvailableFfprobePathSync,
+  prewarmMediaBinaries,
 } from './server/ffmpegBinaries.ts';
 
 async function startServer() {
@@ -56,19 +55,12 @@ async function startServer() {
   app.use(express.json({ limit: '2mb' }));
 
   app.get('/api/health', (_req, res) => {
-    let ffmpegReady = false;
-    let ffprobeReady = false;
-    try {
-      ffmpegReady = Boolean(getFfmpegPath());
-    } catch {
-      ffmpegReady = false;
-    }
-    try {
-      ffprobeReady = Boolean(getFfprobePath());
-    } catch {
-      ffprobeReady = false;
-    }
-    res.json({ ok: true, service: 'klipcast-bot', ffmpegReady, ffprobeReady });
+    res.json({
+      ok: true,
+      service: 'klipcast-bot',
+      ffmpegReady: Boolean(getAvailableFfmpegPathSync()),
+      ffprobeReady: Boolean(getAvailableFfprobePathSync()),
+    });
   });
 
   app.post('/api/auth/verify-google', async (req, res) => {
@@ -1055,6 +1047,7 @@ async function startServer() {
   });
 
   if (process.env.NODE_ENV !== 'production') {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true, hmr: false },
       appType: 'spa',
@@ -1070,11 +1063,7 @@ async function startServer() {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`KlipCast server listening on http://localhost:${PORT}`);
-    try {
-      getYtDlpFfmpegLocation();
-    } catch {
-      // Logged on demand if binaries are missing
-    }
+    void prewarmMediaBinaries();
     void prewarmYtDlpBinary();
   });
 }

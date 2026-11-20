@@ -38,9 +38,9 @@ import {
   type StreamSyncAssessment,
 } from './audioSyncMath.ts';
 import {
-  getFfmpegPath,
-  getFfprobePath,
-  getYtDlpFfmpegLocation,
+  ensureFfmpegPath,
+  ensureFfprobePath,
+  ensureYtDlpFfmpegLocation,
   isMissingBinaryError,
   selectYtDlpReleaseAsset,
 } from './ffmpegBinaries.ts';
@@ -287,8 +287,9 @@ async function probeVideoMeta(videoPath: string): Promise<{
     throw new Error('File video tidak valid atau terlalu kecil.');
   }
 
+  const ffprobeBin = await ensureFfprobePath();
   const { stdout } = await execFileAsync(
-    getFfprobePath(),
+    ffprobeBin,
     [
       '-v',
       'error',
@@ -360,24 +361,19 @@ async function probeVideoMeta(videoPath: string): Promise<{
  * SIGTERM/SIGKILL child termination when `signal` is aborted so cancelled renders
  * free 100% of CPU & RAM immediately.
  */
-function runFfmpegWithProgress(params: {
+async function runFfmpegWithProgress(params: {
   args: string[];
   durationSec: number;
   signal?: AbortSignal;
   onPercent?: (ratio01: number) => void;
 }): Promise<void> {
   const { args, durationSec, signal, onPercent } = params;
+  throwIfAborted(signal);
+  const ffmpegBin = await ensureFfmpegPath();
+
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       reject(new RenderCancelledError());
-      return;
-    }
-
-    let ffmpegBin: string;
-    try {
-      ffmpegBin = getFfmpegPath();
-    } catch (err) {
-      reject(err);
       return;
     }
 
@@ -572,7 +568,8 @@ async function extractRawTrimmedSegment(params: {
           '-shortest',
           outputPath,
         ];
-        await execFileAsync(getFfmpegPath(), copyArgs, {
+        const ffmpegBin = await ensureFfmpegPath();
+        await execFileAsync(ffmpegBin, copyArgs, {
           timeout: 120_000,
           maxBuffer: 10 * 1024 * 1024,
           signal,
@@ -660,7 +657,8 @@ async function extractRawTrimmedSegment(params: {
       '-shortest',
       outputPath,
     ];
-    await execFileAsync(getFfmpegPath(), reencodeArgs, {
+    const ffmpegBin = await ensureFfmpegPath();
+    await execFileAsync(ffmpegBin, reencodeArgs, {
       timeout: 180_000,
       maxBuffer: 10 * 1024 * 1024,
       signal,
@@ -689,8 +687,10 @@ async function tryYtDlpDownloadSection(params: {
   signal?: AbortSignal;
 }): Promise<void> {
   throwIfAborted(params.signal);
-  const ytdlp = await ensureYtDlpBinary();
-  const ffmpegLocation = getYtDlpFfmpegLocation();
+  const [ytdlp, ffmpegLocation] = await Promise.all([
+    ensureYtDlpBinary(),
+    ensureYtDlpFfmpegLocation(),
+  ]);
   const args = [
     '--no-playlist',
     '--no-warnings',

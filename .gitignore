@@ -6,3 +6,7 @@ coverage/
 *.log
 .env*
 !.env.example
+data/renders/
+data/tmp/
+data/uploads/
+.playwright-cli/

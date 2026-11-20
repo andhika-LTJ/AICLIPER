@@ -22,12 +22,25 @@ export default defineConfig(() => {
           const distDir = path.resolve(__dirname, 'dist');
           const srcAssets = path.resolve(__dirname, 'src/assets');
           const distAssets = path.resolve(distDir, 'src/assets');
-          if (fs.existsSync(distDir) && fs.existsSync(srcAssets)) {
+          const offloadToCdn =
+            Boolean(process.env.VITE_ASSET_CDN_BASE_URL?.trim()) &&
+            process.env.EXCLUDE_LOCAL_CDN_ASSETS === 'true';
+
+          if (!offloadToCdn && fs.existsSync(distDir) && fs.existsSync(srcAssets)) {
             fs.cpSync(srcAssets, distAssets, {recursive: true, force: true});
+          }
+
+          // Prune unreferenced AI Studio chat screenshots from production dist/
+          const distAiStudio = path.resolve(distDir, 'assets/aistudio');
+          if (fs.existsSync(distAiStudio)) {
+            fs.rmSync(distAiStudio, {recursive: true, force: true});
           }
         },
       },
     ],
+    build: {
+      sourcemap: false,
+    },
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),

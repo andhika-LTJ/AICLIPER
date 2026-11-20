@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { User } from 'firebase/auth';
+import type { User } from '@firebase/auth';
 import {
   Check,
   Copy,
