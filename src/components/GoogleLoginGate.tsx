@@ -1,4 +1,14 @@
-import { AlertCircle, CheckCircle2, Loader2, ShieldCheck } from 'lucide-react';
+import { useState } from 'react';
+import {
+  AlertCircle,
+  Check,
+  CheckCircle2,
+  Copy,
+  ExternalLink,
+  Loader2,
+  ShieldCheck,
+} from 'lucide-react';
+import firebaseConfig from '../../firebase-applet-config.json';
 import { GoogleSignInButton } from './GoogleSignInButton';
 
 interface GoogleLoginGateProps {
@@ -16,6 +26,8 @@ export function GoogleLoginGate({
   errorMessage,
   onGoogleSignIn,
 }: GoogleLoginGateProps) {
+  const [copiedDomain, setCopiedDomain] = useState(false);
+
   if (isCheckingSession) {
     return (
       <div className="min-h-screen bg-slate-50 text-slate-900 flex items-center justify-center p-6">
@@ -41,6 +53,26 @@ export function GoogleLoginGate({
       : authPhase === 'verifying'
         ? 'Memverifikasi tanda tangan digital Google di server...'
         : null;
+
+  const isUnauthorizedDomainError = Boolean(
+    errorMessage && /Authorized Domains/i.test(errorMessage)
+  );
+  const currentHost =
+    typeof window !== 'undefined' && window.location?.hostname
+      ? window.location.hostname
+      : '';
+  const firebaseAuthSettingsUrl = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication/settings`;
+
+  const handleCopyHost = async () => {
+    if (!currentHost) return;
+    try {
+      await navigator.clipboard.writeText(currentHost);
+      setCopiedDomain(true);
+      window.setTimeout(() => setCopiedDomain(false), 1800);
+    } catch {
+      // Ignore clipboard failure
+    }
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col justify-between">
@@ -126,10 +158,43 @@ export function GoogleLoginGate({
             {errorMessage && (
               <div
                 role="alert"
-                className="p-3.5 rounded-lg bg-red-50 border border-red-200 flex items-start gap-2.5 text-xs font-medium text-red-700 leading-relaxed"
+                className="p-3.5 rounded-lg bg-red-50 border border-red-200 space-y-2.5 text-xs text-red-800 leading-relaxed"
               >
-                <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" aria-hidden="true" />
-                <span>{errorMessage}</span>
+                <div className="flex items-start gap-2.5 font-medium">
+                  <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" aria-hidden="true" />
+                  <span>{errorMessage}</span>
+                </div>
+                {isUnauthorizedDomainError && currentHost && (
+                  <div className="pt-2 border-t border-red-200/80 space-y-2 text-[11px] text-red-900">
+                    <div className="flex flex-wrap items-center justify-between gap-2 bg-white/80 border border-red-200 rounded px-2.5 py-1.5">
+                      <code className="font-mono text-red-950 break-all">{currentHost}</code>
+                      <button
+                        type="button"
+                        onClick={() => void handleCopyHost()}
+                        className="inline-flex items-center gap-1 font-semibold text-red-700 hover:text-red-900 cursor-pointer shrink-0"
+                      >
+                        {copiedDomain ? (
+                          <Check className="w-3 h-3" aria-hidden="true" />
+                        ) : (
+                          <Copy className="w-3 h-3" aria-hidden="true" />
+                        )}
+                        <span>{copiedDomain ? 'Tersalin' : 'Salin Domain'}</span>
+                      </button>
+                    </div>
+                    <p>
+                      Tambahkan domain di atas pada <strong>Authentication → Settings → Authorized domains</strong> di Firebase Console:
+                    </p>
+                    <a
+                      href={firebaseAuthSettingsUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 font-semibold text-red-700 hover:underline"
+                    >
+                      <span>Buka Pengaturan Firebase Authentication</span>
+                      <ExternalLink className="w-3 h-3" aria-hidden="true" />
+                    </a>
+                  </div>
+                )}
               </div>
             )}
 
