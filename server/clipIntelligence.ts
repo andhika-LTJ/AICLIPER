@@ -15,6 +15,7 @@ import {
   type AudioTranscriptionWindow,
 } from './audioSyncMath.ts';
 import { normalizeEmotionMoments } from './emotionEffects.ts';
+import { getFfmpegPath } from './ffmpegBinaries.ts';
 import {
   normalizeSpeakerKeyframes,
   normalizeTranscribedCues,
@@ -124,7 +125,7 @@ export function planSmartSampleTimestamps(
 async function detectSceneCutTimestamps(rawVideoPath: string): Promise<number[]> {
   try {
     const { stderr } = await execFileAsync(
-      'ffmpeg',
+      getFfmpegPath(),
       [
         '-threads',
         '0',
@@ -180,7 +181,7 @@ async function extractClipAudioAndSmartFrames(params: {
   // Step 1: Run zero-anchored audio extraction & scene-cut detection concurrently (~1.0–1.5s total)
   const [, sceneCuts] = await Promise.all([
     execFileAsync(
-      'ffmpeg',
+      getFfmpegPath(),
       [
         '-y',
         '-threads',
@@ -216,7 +217,7 @@ async function extractClipAudioAndSmartFrames(params: {
           plannedWindows.map(async (win) => {
             const winPath = path.join(workDir, `win_${String(win.index).padStart(2, '0')}.mp3`);
             await execFileAsync(
-              'ffmpeg',
+              getFfmpegPath(),
               [
                 '-y',
                 '-ss',
@@ -253,7 +254,7 @@ async function extractClipAudioAndSmartFrames(params: {
           const outPath = path.join(workDir, `kf_${String(idx).padStart(2, '0')}.jpg`);
           try {
             await execFileAsync(
-              'ffmpeg',
+              getFfmpegPath(),
               [
                 '-y',
                 '-ss',

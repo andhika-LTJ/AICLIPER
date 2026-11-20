@@ -37,6 +37,13 @@ import {
   assessStreamSyncHealth,
   type StreamSyncAssessment,
 } from './audioSyncMath.ts';
+import {
+  getFfmpegPath,
+  getFfprobePath,
+  getYtDlpFfmpegLocation,
+  isMissingBinaryError,
+  selectYtDlpReleaseAsset,
+} from './ffmpegBinaries.ts';
 
 const execFileAsync = promisify(execFile);
 
@@ -46,7 +53,8 @@ const RENDERS_DIR = path.join(DATA_DIR, 'renders');
 const TMP_DIR = path.join(DATA_DIR, 'tmp');
 const COOKIES_PATH = path.join(DATA_DIR, 'youtube-cookies.txt');
 const ENV_COOKIES_PATH = path.join(DATA_DIR, 'youtube-env-cookies.txt');
-const YTDLP_BIN = '/tmp/yt-dlp';
+const YTDLP_ASSET = selectYtDlpReleaseAsset();
+const YTDLP_BIN = path.join(os.tmpdir(), YTDLP_ASSET.localFileName);
 
 const BROWSER_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
@@ -171,19 +179,38 @@ async function ensureYtDlpBinary(): Promise<string> {
     }
 
     if (fs.existsSync(YTDLP_BIN)) {
-      resolvedYtDlpPath = YTDLP_BIN;
-      return YTDLP_BIN;
+      try {
+        const st = fs.statSync(YTDLP_BIN);
+        if (st.size > 500_000) {
+          if (process.platform !== 'win32') {
+            fs.chmodSync(YTDLP_BIN, 0o755);
+          }
+          resolvedYtDlpPath = YTDLP_BIN;
+          return YTDLP_BIN;
+        }
+        fs.unlinkSync(YTDLP_BIN);
+      } catch {
+        // Re-download corrupted binary
+      }
     }
 
     const res = await fetch(
-      'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux',
+      `https://github.com/yt-dlp/yt-dlp/releases/latest/download/${YTDLP_ASSET.assetName}`,
       { signal: AbortSignal.timeout(25_000) }
     );
     if (!res.ok) {
       throw new Error('Gagal menyiapkan utilitas pengunduh video yt-dlp.');
     }
-    const arrayBuffer = await res.arrayBuffer();
-    fs.writeFileSync(YTDLP_BIN, Buffer.from(arrayBuffer), { mode: 0o755 });
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.byteLength < 500_000) {
+      throw new Error('File pengunduh yt-dlp tidak lengkap saat diunduh.');
+    }
+    const tmpBin = `${YTDLP_BIN}.${Date.now()}.tmp`;
+    fs.writeFileSync(tmpBin, buf, { mode: 0o755 });
+    fs.renameSync(tmpBin, YTDLP_BIN);
+    if (process.platform !== 'win32') {
+      fs.chmodSync(YTDLP_BIN, 0o755);
+    }
     resolvedYtDlpPath = YTDLP_BIN;
     return YTDLP_BIN;
   })();
@@ -261,7 +288,7 @@ async function probeVideoMeta(videoPath: string): Promise<{
   }
 
   const { stdout } = await execFileAsync(
-    'ffprobe',
+    getFfprobePath(),
     [
       '-v',
       'error',
@@ -346,7 +373,15 @@ function runFfmpegWithProgress(params: {
       return;
     }
 
-    const child = spawn('ffmpeg', ['-progress', 'pipe:1', '-nostats', ...args], {
+    let ffmpegBin: string;
+    try {
+      ffmpegBin = getFfmpegPath();
+    } catch (err) {
+      reject(err);
+      return;
+    }
+
+    const child = spawn(ffmpegBin, ['-progress', 'pipe:1', '-nostats', ...args], {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
@@ -537,7 +572,7 @@ async function extractRawTrimmedSegment(params: {
           '-shortest',
           outputPath,
         ];
-        await execFileAsync('ffmpeg', copyArgs, {
+        await execFileAsync(getFfmpegPath(), copyArgs, {
           timeout: 120_000,
           maxBuffer: 10 * 1024 * 1024,
           signal,
@@ -625,7 +660,7 @@ async function extractRawTrimmedSegment(params: {
       '-shortest',
       outputPath,
     ];
-    await execFileAsync('ffmpeg', reencodeArgs, {
+    await execFileAsync(getFfmpegPath(), reencodeArgs, {
       timeout: 180_000,
       maxBuffer: 10 * 1024 * 1024,
       signal,
@@ -655,9 +690,12 @@ async function tryYtDlpDownloadSection(params: {
 }): Promise<void> {
   throwIfAborted(params.signal);
   const ytdlp = await ensureYtDlpBinary();
+  const ffmpegLocation = getYtDlpFfmpegLocation();
   const args = [
     '--no-playlist',
     '--no-warnings',
+    '--ffmpeg-location',
+    ffmpegLocation,
     '--socket-timeout',
     '15',
     '--retries',
@@ -922,6 +960,7 @@ async function acquireRawClipSegment(params: {
         return 'youtube_stream';
       } catch (err) {
         if (isAbortLikeError(err, signal)) throw new RenderCancelledError();
+        if (isMissingBinaryError(err)) throw err;
         // Fall through to parallel third-party HD downloader
       }
     }
@@ -977,6 +1016,11 @@ async function acquireRawClipSegment(params: {
         if (fs.existsSync(chunkedTempPath)) fs.unlinkSync(chunkedTempPath);
         if (fs.existsSync(rawSegmentPath)) fs.unlinkSync(rawSegmentPath);
         throw new RenderCancelledError();
+      }
+      if (isMissingBinaryError(err)) {
+        if (fs.existsSync(chunkedTempPath)) fs.unlinkSync(chunkedTempPath);
+        if (fs.existsSync(rawSegmentPath)) fs.unlinkSync(rawSegmentPath);
+        throw err;
       }
       thirdPartyErr = err;
       invalidateEpisodeStreamCache(episode.videoId || episode.sourceUrl);
