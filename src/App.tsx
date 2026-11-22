@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import type { User } from '@firebase/auth';
+import { AdminControlCenterView } from './components/AdminControlCenterView';
+import { AiContentStudioView } from './components/AiContentStudioView';
+import { AnalyticsAndTemplatesView } from './components/AnalyticsAndTemplatesView';
 import { AutomationSettingsView } from './components/AutomationSettingsView';
 import { ClipListPanel } from './components/ClipListPanel';
 import { ClipPublisherPanel } from './components/ClipPublisherPanel';
@@ -7,17 +10,26 @@ import { DistributionQueueView } from './components/DistributionQueueView';
 import { ManualShortsModal } from './components/ManualShortsModal';
 import { PodcastInputBar } from './components/PodcastInputBar';
 import { ShortsPreviewStage } from './components/ShortsPreviewStage';
+import { SmartVideoEditorView } from './components/SmartVideoEditorView';
 import { SummaryArchiveView } from './components/SummaryArchiveView';
 import { TopBar, type NavSection } from './components/TopBar';
+import { UserDashboardView } from './components/UserDashboardView';
 import { YouTubeDirectUploadModal } from './components/YouTubeDirectUploadModal';
 import { GoogleLoginGate } from './components/GoogleLoginGate';
 import { INITIAL_STUDIO_STATE } from './data/seedPodcasts';
 import type {
   BotAutomationConfig,
+  ClipOverlayStyle,
+  ClippingApproach,
   PodcastClip,
   SocialPlatform,
   StudioStoreState,
+  StudioTemplate,
+  ThemePreset,
+  UserRole,
 } from './types/clipper';
+import { DEFAULT_CLIP_OVERLAY_STYLE } from './utils/clipOverlayStyle';
+import { apiFetch } from './utils/apiClient';
 import { PLATFORM_LABELS } from './utils/youtube';
 import {
   clearYouTubeAccessToken,
@@ -38,7 +50,7 @@ export default function App() {
   const [selectedClipId, setSelectedClipId] = useState<string>(
     INITIAL_STUDIO_STATE.clips[0].id
   );
-  const [isLoadingStore, setIsLoadingStore] = useState(true);
+  const [isLoadingStore, setIsLoadingStore] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analyzeError, setAnalyzeError] = useState<string | null>(null);
   const [analyzeSuccess, setAnalyzeSuccess] = useState<string | null>(null);
@@ -48,6 +60,22 @@ export default function App() {
     text: string;
   } | null>(null);
   const [isManualModalOpen, setIsManualModalOpen] = useState(false);
+  const [themePreset, setThemePreset] = useState<ThemePreset>(() => {
+    if (typeof window !== 'undefined') {
+      const savedPreset = window.localStorage.getItem('klipcast_theme_preset');
+      if (
+        savedPreset === 'minimal_light' ||
+        savedPreset === 'dark_studio' ||
+        savedPreset === 'creator_neon' ||
+        savedPreset === 'professional'
+      ) {
+        return savedPreset;
+      }
+      const legacy = window.localStorage.getItem('klipcast_theme');
+      if (legacy === 'dark') return 'dark_studio';
+    }
+    return 'minimal_light';
+  });
 
   // Google Identity & server verification gate + in-memory YouTube upload OAuth token
   const [isCheckingGoogleSession, setIsCheckingGoogleSession] = useState(true);
@@ -68,6 +96,48 @@ export default function App() {
     new URLSearchParams(window.location.search).get('autostart') === '1';
 
   const urlInputRef = useRef<HTMLInputElement | null>(null);
+
+  const isAuthenticatedWithGoogle = Boolean(youtubeUser && verifiedIdentity);
+  const userRole: UserRole = verifiedIdentity?.role ?? 'user';
+  const isAdmin = userRole === 'admin' || userRole === 'super_admin';
+
+  useEffect(() => {
+    const isDark = themePreset === 'dark_studio' || themePreset === 'creator_neon';
+    document.documentElement.dataset.theme = themePreset;
+    document.documentElement.classList.toggle('dark', isDark);
+    try {
+      window.localStorage.setItem('klipcast_theme_preset', themePreset);
+      window.localStorage.setItem('klipcast_theme', isDark ? 'dark' : 'light');
+    } catch {
+      // Ignore storage restrictions
+    }
+  }, [themePreset]);
+
+  const handleThemePresetChange = (nextPreset: ThemePreset) => {
+    setThemePreset(nextPreset);
+    const isDark = nextPreset === 'dark_studio' || nextPreset === 'creator_neon';
+    if (isAuthenticatedWithGoogle) {
+      void apiFetch('/api/me/profile', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          themePreference: isDark ? 'dark' : 'light',
+          themePreset: nextPreset,
+        }),
+      }).catch(() => {});
+    }
+  };
+
+  const handleCycleTheme = () => {
+    const order: ThemePreset[] = [
+      'minimal_light',
+      'dark_studio',
+      'creator_neon',
+      'professional',
+    ];
+    const next = order[(order.indexOf(themePreset) + 1) % order.length];
+    handleThemePresetChange(next);
+  };
 
   useEffect(() => {
     const unsubscribe = initGoogleSessionListener({
@@ -92,31 +162,49 @@ export default function App() {
     return unsubscribe;
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    async function loadStore() {
-      try {
-        const res = await fetch('/api/state');
-        if (!res.ok) return;
-        const data = (await res.json()) as StudioStoreState;
-        if (!cancelled && data.episodes.length > 0) {
-          setStore(data);
-          const firstEp = data.episodes[0];
-          setSelectedEpisodeId(firstEp.id);
-          const firstClip = data.clips.find((c) => c.episodeId === firstEp.id) ?? data.clips[0];
-          if (firstClip) setSelectedClipId(firstClip.id);
-        }
-      } catch {
-        // Fallback to seed state if offline
-      } finally {
-        if (!cancelled) setIsLoadingStore(false);
-      }
+  const refreshStoreFromServer = async () => {
+    if (!isAuthenticatedWithGoogle) {
+      setIsLoadingStore(false);
+      return;
     }
-    loadStore();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    setIsLoadingStore(true);
+    try {
+      const res = await apiFetch('/api/state', { cache: 'no-store' });
+      if (!res.ok) return;
+      const data = (await res.json()) as StudioStoreState;
+      setStore(data);
+      if (data.episodes.length > 0) {
+        const firstEp = data.episodes[0];
+        setSelectedEpisodeId((prev) =>
+          data.episodes.some((e) => e.id === prev) ? prev : firstEp.id
+        );
+        const firstClip = data.clips.find((c) => c.episodeId === firstEp.id) ?? data.clips[0];
+        if (firstClip) {
+          setSelectedClipId((prev) =>
+            data.clips.some((c) => c.id === prev) ? prev : firstClip.id
+          );
+        }
+      }
+    } catch {
+      // Keep current state on transient network failure
+    } finally {
+      setIsLoadingStore(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!isAuthenticatedWithGoogle) {
+      setIsLoadingStore(false);
+      return;
+    }
+    void refreshStoreFromServer();
+  }, [isAuthenticatedWithGoogle, verifiedIdentity?.uid]);
+
+  useEffect(() => {
+    if (activeSection === 'admin' && !isAdmin) {
+      setActiveSection('dashboard');
+    }
+  }, [activeSection, isAdmin]);
 
   const activeEpisode =
     store.episodes.find((e) => e.id === selectedEpisodeId) ?? store.episodes[0];
@@ -135,13 +223,18 @@ export default function App() {
     url: string;
     manualTranscript?: string;
     autoPostOverride: boolean;
+    clippingApproach: ClippingApproach;
   }) => {
+    if (!isAuthenticatedWithGoogle) {
+      setAnalyzeError('Silakan masuk dengan akun Google terlebih dahulu untuk menganalisis link YouTube.');
+      return;
+    }
     setIsAnalyzing(true);
     setAnalyzeError(null);
     setAnalyzeSuccess(null);
     setPublishFeedback(null);
     try {
-      const res = await fetch('/api/podcast/analyze', {
+      const res = await apiFetch('/api/podcast/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -179,7 +272,14 @@ export default function App() {
   };
 
   const handleUpdateClip = async (clipId: string, patch: Partial<PodcastClip>) => {
-    const res = await fetch(`/api/clips/${clipId}`, {
+    if (!isAuthenticatedWithGoogle) {
+      setStore((prev) => ({
+        ...prev,
+        clips: prev.clips.map((c) => (c.id === clipId ? { ...c, ...patch } : c)),
+      }));
+      return;
+    }
+    const res = await apiFetch(`/api/clips/${clipId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch),
@@ -194,15 +294,53 @@ export default function App() {
     await handleUpdateClip(clipId, { startSec, endSec });
   };
 
+  const handleScheduleClip = async (
+    clipId: string,
+    scheduledAt: string | null,
+    platforms: SocialPlatform[]
+  ) => {
+    if (!isAuthenticatedWithGoogle) {
+      setStore((prev) => ({
+        ...prev,
+        clips: prev.clips.map((c) =>
+          c.id === clipId
+            ? {
+                ...c,
+                scheduledAt: scheduledAt ?? undefined,
+                status: scheduledAt ? 'scheduled' : 'draft',
+              }
+            : c
+        ),
+      }));
+      return;
+    }
+    const res = await apiFetch(`/api/clips/${clipId}/schedule`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scheduledAt, platforms }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.store) setStore(data.store);
+    }
+  };
+
   const handlePublishClip = async (
     clipId: string,
     mode: 'auto' | 'manual',
     platforms: SocialPlatform[]
   ) => {
+    if (!isAuthenticatedWithGoogle) {
+      setPublishFeedback({
+        type: 'error',
+        text: 'Masuk dengan akun Google untuk menjalankan publikasi dan menyimpan riwayat ke cloud.',
+      });
+      return;
+    }
     setIsPublishing(true);
     setPublishFeedback(null);
     try {
-      const res = await fetch(`/api/clips/${clipId}/publish`, {
+      const res = await apiFetch(`/api/clips/${clipId}/publish`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ mode, platforms }),
@@ -235,19 +373,31 @@ export default function App() {
   };
 
   const handleDeleteClip = async (clipId: string) => {
-    const res = await fetch(`/api/clips/${clipId}`, { method: 'DELETE' });
+    if (!isAuthenticatedWithGoogle) {
+      setStore((prev) => ({
+        ...prev,
+        clips: prev.clips.filter((c) => c.id !== clipId),
+      }));
+      return;
+    }
+    const res = await apiFetch(`/api/clips/${clipId}`, { method: 'DELETE' });
     if (res.ok) {
       const data = (await res.json()) as { store: StudioStoreState };
       setStore(data.store);
       if (selectedClipId === clipId) {
-        const fallback = data.store.clips.find((c) => c.episodeId === selectedEpisodeId) ?? data.store.clips[0];
+        const fallback =
+          data.store.clips.find((c) => c.episodeId === selectedEpisodeId) ?? data.store.clips[0];
         if (fallback) setSelectedClipId(fallback.id);
       }
     }
   };
 
   const handleSaveAutomation = async (nextConfig: BotAutomationConfig) => {
-    const res = await fetch('/api/automation', {
+    if (!isAuthenticatedWithGoogle) {
+      setStore((prev) => ({ ...prev, automation: nextConfig }));
+      return;
+    }
+    const res = await apiFetch('/api/automation', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(nextConfig),
@@ -259,12 +409,19 @@ export default function App() {
   };
 
   const handleResetDemo = async () => {
-    const res = await fetch('/api/reset-demo', { method: 'POST' });
+    if (!isAuthenticatedWithGoogle) {
+      setStore(INITIAL_STUDIO_STATE);
+      setSelectedEpisodeId(INITIAL_STUDIO_STATE.episodes[0].id);
+      setSelectedClipId(INITIAL_STUDIO_STATE.clips[0].id);
+      setActiveSection('studio');
+      return;
+    }
+    const res = await apiFetch('/api/reset-demo', { method: 'POST' });
     if (res.ok) {
       const data = await res.json();
       setStore(data.store);
-      setSelectedEpisodeId(data.store.episodes[0].id);
-      setSelectedClipId(data.store.clips[0].id);
+      if (data.store.episodes[0]) setSelectedEpisodeId(data.store.episodes[0].id);
+      if (data.store.clips[0]) setSelectedClipId(data.store.clips[0].id);
       setActiveSection('studio');
     }
   };
@@ -316,6 +473,8 @@ export default function App() {
     setYoutubeAccessToken(null);
     setGoogleAuthError(null);
     setIsYouTubeUploadModalOpen(false);
+    setStore(INITIAL_STUDIO_STATE);
+    if (activeSection === 'admin') setActiveSection('studio');
   };
 
   const handleOpenYouTubeDirectUpload = () => {
@@ -332,7 +491,9 @@ export default function App() {
     if (!activeClip) return;
     const token = youtubeAccessToken ?? getYouTubeAccessToken();
     if (!token) {
-      setYouTubeUploadError('Sesi login Google belum aktif. Silakan masuk dengan Google terlebih dahulu.');
+      setYouTubeUploadError(
+        'Sesi izin unggah YouTube belum aktif. Silakan klik "Aktifkan Izin Upload YouTube" terlebih dahulu.'
+      );
       return;
     }
 
@@ -340,11 +501,12 @@ export default function App() {
     setYouTubeUploadError(null);
     setPublishFeedback(null);
     try {
-      const res = await fetch(`/api/clips/${activeClip.id}/youtube-upload`, {
+      // apiFetch sends Authorization: Bearer <firebaseIdToken>; YouTube OAuth token goes in X-YouTube-Access-Token
+      const res = await apiFetch(`/api/clips/${activeClip.id}/youtube-upload`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
+          'X-YouTube-Access-Token': token,
         },
         body: JSON.stringify(payload),
       });
@@ -381,8 +543,6 @@ export default function App() {
     }
   };
 
-  const isAuthenticatedWithGoogle = Boolean(youtubeUser && verifiedIdentity);
-
   if (!isPreviewAutostart && (isCheckingGoogleSession || !isAuthenticatedWithGoogle)) {
     return (
       <GoogleLoginGate
@@ -396,31 +556,52 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col bg-slate-50 text-slate-900">
+    <div className="app-shell min-h-screen flex flex-col bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100">
       <TopBar
         activeSection={activeSection}
         onNavigate={setActiveSection}
         onStartNewLink={handleStartNewLink}
         youtubeUser={youtubeUser}
         isGoogleVerified={Boolean(verifiedIdentity)}
+        userRole={userRole}
         isSigningInGoogle={isSigningInGoogle}
+        themePreset={themePreset}
+        onCycleTheme={handleCycleTheme}
         onGoogleSignIn={() => void handleGoogleSignIn(false)}
         onGoogleSignOut={() => void handleGoogleSignOut()}
       />
 
       <main className="flex-1 w-full max-w-[1440px] mx-auto px-4 sm:px-8 py-6 sm:py-8">
+        {activeSection === 'dashboard' && (
+          <UserDashboardView
+            isAuthenticated={isAuthenticatedWithGoogle}
+            episodes={store.episodes}
+            clips={store.clips}
+            userDisplayName={youtubeUser?.displayName ?? null}
+            userEmail={youtubeUser?.email ?? null}
+            userRole={userRole}
+            themePreset={themePreset}
+            onThemePresetChange={handleThemePresetChange}
+            onJumpToClip={handleJumpToClip}
+            onOpenStudio={() => setActiveSection('studio')}
+            onOpenAiStudio={() => setActiveSection('ai_studio')}
+            onGoogleSignIn={() => void handleGoogleSignIn(false)}
+            onDataDeleted={refreshStoreFromServer}
+          />
+        )}
+
         {activeSection === 'studio' && (
           <div className="space-y-6">
             <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
               <div className="max-w-2xl">
-                <h1 className="font-display text-2xl sm:text-3xl font-bold tracking-tight text-slate-900 text-balance">
+                <h1 className="font-display text-2xl sm:text-3xl font-bold tracking-tight text-slate-900 dark:text-white text-balance">
                   Studio Klip Podcast & Ringkasan Otomatis
                 </h1>
-                <p className="text-sm text-slate-600 mt-1">
-                  Tempel link podcast YouTube untuk memotong bagian paling menarik menjadi YouTube Shorts, membuat ringkasan teksnya, lalu terbitkan otomatis atau manual.
+                <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
+                  Tempel link podcast YouTube untuk memotong bagian paling menarik menjadi YouTube Shorts, Reels, atau TikTok lengkap dengan intro AI, subtitle akurat, dan auto-fokus pembicara.
                 </p>
               </div>
-              <div className="text-xs font-mono tabular-nums text-slate-500 whitespace-nowrap">
+              <div className="text-xs font-mono tabular-nums text-slate-500 dark:text-slate-400 whitespace-nowrap">
                 {store.episodes.length} episode · {store.clips.length} klip siap kelola
               </div>
             </div>
@@ -436,7 +617,7 @@ export default function App() {
             {analyzeSuccess && (
               <div
                 role="status"
-                className="bg-emerald-50 border border-emerald-200 text-emerald-900 rounded-xl px-4 py-3 text-sm font-medium"
+                className="bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 text-emerald-900 dark:text-emerald-200 rounded-xl px-4 py-3 text-sm font-medium"
               >
                 {analyzeSuccess}
               </div>
@@ -472,6 +653,8 @@ export default function App() {
                   defaultEmotionEffectsEnabled={store.automation.enableAiEmotionEffects}
                   defaultAiIntroEnabled={store.automation.enableAiIntro}
                   ultraHdEnabled={store.automation.enableUltraHdRender}
+                  isAuthenticated={isAuthenticatedWithGoogle}
+                  canManageCookies={isAdmin}
                   onSaveTrim={handleSaveTrim}
                   onSaveOverlayStyle={(clipId, overlayStyle) =>
                     handleUpdateClip(clipId, { overlayStyle })
@@ -501,15 +684,15 @@ export default function App() {
                 />
               </div>
             ) : (
-              <div className="bg-white border border-slate-200 rounded-xl p-10 text-center space-y-3">
-                <p className="text-base font-semibold text-slate-900">
+              <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-10 text-center space-y-3">
+                <p className="text-base font-semibold text-slate-900 dark:text-white">
                   {isLoadingStore ? 'Memuat studio kliping...' : 'Belum ada klip podcast'}
                 </p>
                 {!isLoadingStore && (
                   <button
                     type="button"
-                    onClick={handleResetDemo}
-                    className="px-4 py-2 text-sm font-semibold text-white bg-slate-900 rounded-lg cursor-pointer"
+                    onClick={() => void handleResetDemo()}
+                    className="px-4 py-2 text-sm font-semibold text-white bg-slate-900 dark:bg-red-600 rounded-lg cursor-pointer"
                   >
                     Muat Contoh Podcast
                   </button>
@@ -517,6 +700,57 @@ export default function App() {
               </div>
             )}
           </div>
+        )}
+
+        {activeSection === 'editor' && (
+          <SmartVideoEditorView
+            episodes={store.episodes}
+            clips={store.clips}
+            activeEpisodeId={activeEpisode?.id ?? ''}
+            activeClipId={activeClip?.id ?? ''}
+            isAuthenticated={isAuthenticatedWithGoogle}
+            onSelectClip={(epId, cId) => {
+              setSelectedEpisodeId(epId);
+              setSelectedClipId(cId);
+            }}
+            onUpdateClip={handleUpdateClip}
+            onJumpToRenderStudio={() => setActiveSection('studio')}
+          />
+        )}
+
+        {activeSection === 'ai_studio' && (
+          <AiContentStudioView
+            episodes={store.episodes}
+            clips={store.clips}
+            activeEpisodeId={activeEpisode?.id ?? ''}
+            activeClipId={activeClip?.id ?? ''}
+            isAuthenticated={isAuthenticatedWithGoogle}
+            onSelectClip={(epId, cId) => {
+              setSelectedEpisodeId(epId);
+              setSelectedClipId(cId);
+            }}
+            onUpdateClip={handleUpdateClip}
+            onGoogleSignIn={() => void handleGoogleSignIn(false)}
+          />
+        )}
+
+        {activeSection === 'analytics' && (
+          <AnalyticsAndTemplatesView
+            isAuthenticated={isAuthenticatedWithGoogle}
+            hasYouTubeToken={Boolean(youtubeAccessToken)}
+            clips={store.clips}
+            onConnectYouTube={() => void handleGoogleSignIn(true)}
+            onApplyTemplateToActiveClip={async (tpl: StudioTemplate) => {
+              if (!activeClip) return;
+              const merged: ClipOverlayStyle = {
+                ...DEFAULT_CLIP_OVERLAY_STYLE,
+                ...(activeClip.overlayStyle ?? {}),
+                ...(tpl.config as Partial<ClipOverlayStyle>),
+              };
+              await handleUpdateClip(activeClip.id, { overlayStyle: merged });
+              setActiveSection('studio');
+            }}
+          />
         )}
 
         {activeSection === 'summaries' && (
@@ -535,6 +769,7 @@ export default function App() {
             defaultPlatforms={store.automation.defaultPlatforms}
             onJumpToClip={handleJumpToClip}
             onAutoPostClip={(id, platforms) => handlePublishClip(id, 'auto', platforms)}
+            onScheduleClip={handleScheduleClip}
             onDeleteClip={handleDeleteClip}
           />
         )}
@@ -542,9 +777,15 @@ export default function App() {
         {activeSection === 'automation' && (
           <AutomationSettingsView
             config={store.automation}
+            isAuthenticated={isAuthenticatedWithGoogle}
+            canManageCookies={isAdmin}
             onSaveConfig={handleSaveAutomation}
             onResetDemo={handleResetDemo}
           />
+        )}
+
+        {activeSection === 'admin' && isAdmin && (
+          <AdminControlCenterView currentUserRole={userRole} />
         )}
       </main>
 

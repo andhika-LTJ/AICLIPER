@@ -1,5 +1,13 @@
 import { GoogleGenAI, Type, ThinkingLevel } from '@google/genai';
-import type { PodcastClip, PodcastEpisode, SocialPlatform } from '../src/types/clipper.ts';
+import { z } from 'zod';
+import type {
+  ClipQualityScores,
+  ClippingApproach,
+  EpisodeChapter,
+  PodcastClip,
+  PodcastEpisode,
+  SocialPlatform,
+} from '../src/types/clipper.ts';
 import { resolveAssetUrl } from '../src/utils/assetUrl.ts';
 import {
   clampClipRange,
@@ -25,6 +33,205 @@ interface YouTubeFetchedContext {
   transcriptSegments: TranscriptSegment[];
   transcriptSource: PodcastEpisode['transcriptSource'];
 }
+
+export interface GeminiUsageMeta {
+  model: string;
+  promptTokens: number;
+  outputTokens: number;
+  cached: boolean;
+}
+
+export interface QualityScoreWeights {
+  hookStrength: number;
+  emotionalImpact: number;
+  informationValue: number;
+  entertainmentValue: number;
+  contextCompleteness: number;
+  engagementPotential: number;
+  shareabilityPotential: number;
+}
+
+export const DEFAULT_QUALITY_SCORE_WEIGHTS: QualityScoreWeights = {
+  hookStrength: 0.22,
+  emotionalImpact: 0.14,
+  informationValue: 0.15,
+  entertainmentValue: 0.11,
+  contextCompleteness: 0.14,
+  engagementPotential: 0.12,
+  shareabilityPotential: 0.12,
+};
+
+function clampScore(val: unknown, fallback = 78): number {
+  const n = Number(val);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(40, Math.min(99, Math.round(n)));
+}
+
+/**
+ * Computes a transparent, weighted 7-dimension Content Quality Score ("Estimasi Kualitas Konten")
+ * with configurable weights so creators get an honest, structured editorial signal rather than a black-box number.
+ */
+export function computeWeightedContentQualityScore(
+  raw: Partial<ClipQualityScores> | undefined,
+  fallbackBase = 84,
+  weights: QualityScoreWeights = DEFAULT_QUALITY_SCORE_WEIGHTS
+): ClipQualityScores {
+  const hookStrength = clampScore(raw?.hookStrength, fallbackBase + 2);
+  const emotionalImpact = clampScore(raw?.emotionalImpact, fallbackBase - 2);
+  const informationValue = clampScore(raw?.informationValue, fallbackBase + 1);
+  const entertainmentValue = clampScore(raw?.entertainmentValue, fallbackBase - 3);
+  const contextCompleteness = clampScore(raw?.contextCompleteness, fallbackBase);
+  const engagementPotential = clampScore(raw?.engagementPotential, fallbackBase);
+  const shareabilityPotential = clampScore(raw?.shareabilityPotential, fallbackBase - 1);
+
+  const totalWeight =
+    weights.hookStrength +
+    weights.emotionalImpact +
+    weights.informationValue +
+    weights.entertainmentValue +
+    weights.contextCompleteness +
+    weights.engagementPotential +
+    weights.shareabilityPotential;
+
+  const weighted =
+    (hookStrength * weights.hookStrength +
+      emotionalImpact * weights.emotionalImpact +
+      informationValue * weights.informationValue +
+      entertainmentValue * weights.entertainmentValue +
+      contextCompleteness * weights.contextCompleteness +
+      engagementPotential * weights.engagementPotential +
+      shareabilityPotential * weights.shareabilityPotential) /
+    (totalWeight || 1);
+
+  const validTypes = new Set([
+    'lucu',
+    'emosional',
+    'kontroversial',
+    'inspiratif',
+    'edukatif',
+    'informatif',
+  ]);
+  const momentType =
+    raw?.momentType && validTypes.has(raw.momentType)
+      ? raw.momentType
+      : 'informatif';
+
+  return {
+    hookStrength,
+    emotionalImpact,
+    informationValue,
+    entertainmentValue,
+    contextCompleteness,
+    engagementPotential,
+    shareabilityPotential,
+    overallScore: clampScore(Math.round(weighted), fallbackBase),
+    momentType,
+  };
+}
+
+/**
+ * Removes near-duplicate/heavily overlapping clips (>65% overlap ratio) while keeping
+ * the highest quality-scored clip first.
+ */
+export function deduplicateOverlappingClips<
+  T extends { startSec: number; endSec: number; viralScore?: number },
+>(clips: T[], maxOverlapRatio = 0.65): T[] {
+  const sorted = [...clips].sort((a, b) => (b.viralScore ?? 0) - (a.viralScore ?? 0));
+  const accepted: T[] = [];
+
+  for (const candidate of sorted) {
+    const cDur = Math.max(1, candidate.endSec - candidate.startSec);
+    const hasHeavyOverlap = accepted.some((existing) => {
+      const overlapStart = Math.max(existing.startSec, candidate.startSec);
+      const overlapEnd = Math.min(existing.endSec, candidate.endSec);
+      const overlapDur = Math.max(0, overlapEnd - overlapStart);
+      const minDur = Math.min(cDur, Math.max(1, existing.endSec - existing.startSec));
+      return overlapDur / minDur > maxOverlapRatio;
+    });
+    if (!hasHeavyOverlap) {
+      accepted.push(candidate);
+    }
+  }
+  return accepted;
+}
+
+const RawClipZodSchema = z.object({
+  title: z.string().min(2),
+  hookLine: z.string().min(2),
+  startSec: z.number(),
+  endSec: z.number(),
+  viralScore: z.number().optional(),
+  viralReason: z.string().optional(),
+  priorityLabel: z.string().optional(),
+  momentType: z
+    .enum(['lucu', 'emosional', 'kontroversial', 'inspiratif', 'edukatif', 'informatif'])
+    .optional(),
+  qualityScores: z
+    .object({
+      hookStrength: z.number().optional(),
+      emotionalImpact: z.number().optional(),
+      informationValue: z.number().optional(),
+      entertainmentValue: z.number().optional(),
+      contextCompleteness: z.number().optional(),
+      engagementPotential: z.number().optional(),
+      shareabilityPotential: z.number().optional(),
+    })
+    .optional(),
+  ringkasanTeks: z.string().min(2),
+  poinKunci: z.array(z.string()).default([]),
+  transcriptExcerpt: z.string().default(''),
+  captionCues: z
+    .array(
+      z.object({
+        offsetSec: z.number(),
+        durationSec: z.number(),
+        text: z.string(),
+      })
+    )
+    .default([]),
+  youtubeTitle: z.string().default(''),
+  youtubeCaption: z.string().default(''),
+  youtubeHashtags: z.array(z.string()).default([]),
+  tiktokTitle: z.string().default(''),
+  tiktokCaption: z.string().default(''),
+  tiktokHashtags: z.array(z.string()).default([]),
+  instagramTitle: z.string().default(''),
+  instagramCaption: z.string().default(''),
+  instagramHashtags: z.array(z.string()).default([]),
+  facebookTitle: z.string().optional(),
+  facebookCaption: z.string().optional(),
+  facebookHashtags: z.array(z.string()).optional(),
+  xTitle: z.string().default(''),
+  xCaption: z.string().default(''),
+  xHashtags: z.array(z.string()).default([]),
+  linkedinTitle: z.string().default(''),
+  linkedinCaption: z.string().default(''),
+  linkedinHashtags: z.array(z.string()).default([]),
+});
+
+const AnalyzerResponseZodSchema = z.object({
+  episodeSummary: z.string().min(5),
+  keyTopics: z.array(z.string()).default([]),
+  chapters: z
+    .array(
+      z.object({
+        timeSec: z.number(),
+        title: z.string(),
+      })
+    )
+    .optional(),
+  keyQuotes: z.array(z.string()).optional(),
+  clips: z.array(RawClipZodSchema).min(1),
+});
+
+interface AnalysisCacheEntry {
+  episode: PodcastEpisode;
+  clips: PodcastClip[];
+  expiresAtMs: number;
+}
+
+const analysisCache = new Map<string, AnalysisCacheEntry>();
+const ANALYSIS_CACHE_TTL_MS = 20 * 60 * 1000;
 
 function decodeHtmlEntities(str: string): string {
   return str
@@ -61,7 +268,6 @@ export async function fetchYouTubeContext(
   let transcriptSegments: TranscriptSegment[] = [];
   let transcriptSource: PodcastEpisode['transcriptSource'] = 'metadata_and_search';
 
-  // Prefer crisp maxresdefault thumbnail if available, alongside fast oEmbed metadata
   await Promise.all([
     (async () => {
       try {
@@ -100,7 +306,6 @@ export async function fetchYouTubeContext(
     })(),
   ]);
 
-  // 2. If user provided a manual transcript, parse or preserve it directly
   if (manualTranscript && manualTranscript.trim().length > 30) {
     const lines = manualTranscript
       .split(/\r?\n/)
@@ -113,7 +318,6 @@ export async function fetchYouTubeContext(
     }));
     transcriptSource = 'manual_transcript';
   } else {
-    // 3. Try extracting lengthSeconds, shortDescription, and captionTracks from YouTube watch page
     try {
       const pageRes = await fetch(canonicalUrl, {
         headers: {
@@ -212,19 +416,79 @@ interface AnalyzeOptions {
   minDurationSec: number;
   maxDurationSec: number;
   autoAddHashtagShorts: boolean;
+  clippingApproach?: ClippingApproach;
+  skipCache?: boolean;
 }
+
+const APPROACH_DIRECTIVES: Record<ClippingApproach, string> = {
+  educational:
+    'PENDEKATAN EDUKATIF: Prioritaskan momen penjelasan konsep, framework, langkah praktis, atau kesalahan umum yang memberi nilai belajar langsung bagi audiens.',
+  storytelling:
+    'PENDEKATAN STORYTELLING: Prioritaskan kisah personal, konflik, titik balik, dan resolusi naratif yang membuat penonton mengikuti cerita sampai selesai.',
+  motivational:
+    'PENDEKATAN MOTIVASIONAL: Prioritaskan momen inspiratif, mindset shift, refleksi perjuangan, atau pesan penguat yang mendorong audiens bertindak.',
+  informative:
+    'PENDEKATAN INFORMATIF: Prioritaskan fakta menarik, data spesifik, berita/tren industri, dan wawasan padat yang mudah dicerna dan dibagikan.',
+  entertainment:
+    'PENDEKATAN HIBURAN: Prioritaskan momen lucu, spontan, banter tajam, reaksi tak terduga, dan punchline yang mengundang tawa atau komentar.',
+  promotional:
+    'PENDEKATAN PROMOSIONAL / HOOK BISNIS: Prioritaskan momen studi kasus, bukti hasil, masalah-solusi produk/jasa, dan ajakan bernilai tinggi tanpa terasa hard-selling.',
+};
+
+const APPROACH_PLATFORM_HINT: Record<ClippingApproach, SocialPlatform> = {
+  educational: 'youtube_shorts',
+  storytelling: 'tiktok',
+  motivational: 'instagram_reels',
+  informative: 'linkedin',
+  entertainment: 'tiktok',
+  promotional: 'instagram_reels',
+};
 
 export async function analyzePodcastWithGemini(
   options: AnalyzeOptions
-): Promise<{ episode: PodcastEpisode; clips: PodcastClip[] }> {
+): Promise<{
+  episode: PodcastEpisode;
+  clips: PodcastClip[];
+  usage: GeminiUsageMeta;
+}> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new Error('GEMINI_API_KEY belum tersedia di environment server.');
   }
 
+  const approach: ClippingApproach = options.clippingApproach ?? 'educational';
+  const normalizedBounds = normalizeAutomationDurationBounds(
+    options.minDurationSec,
+    options.maxDurationSec
+  );
+  const cacheKey = `${options.videoId}:${approach}:${options.targetClipCount}:${normalizedBounds.minClipSec}-${normalizedBounds.maxClipSec}:${options.autoAddHashtagShorts ? '1' : '0'}:${(options.manualTranscript ?? '').trim().slice(0, 120)}`;
+
+  if (!options.skipCache) {
+    const cached = analysisCache.get(cacheKey);
+    if (cached && cached.expiresAtMs > Date.now()) {
+      const clonedEpisode: PodcastEpisode = {
+        ...structuredClone(cached.episode),
+        id: options.episodeId,
+        sourceUrl: options.sourceUrl,
+        createdAt: new Date().toISOString(),
+      };
+      const clonedClips: PodcastClip[] = structuredClone(cached.clips).map((clip, idx) => ({
+        ...clip,
+        id: `${options.episodeId}-clip-${idx + 1}`,
+        episodeId: options.episodeId,
+        status: 'draft',
+        publishedPlatforms: [],
+      }));
+      return {
+        episode: clonedEpisode,
+        clips: clonedClips,
+        usage: { model: 'cache', promptTokens: 0, outputTokens: 0, cached: true },
+      };
+    }
+  }
+
   const ctx = await fetchYouTubeContext(options.videoId, options.manualTranscript);
 
-  // Format transcript chunk with timestamps (cap to ~18,000 chars for fast Gemini processing)
   let transcriptContext = '';
   if (ctx.transcriptSegments.length > 0) {
     transcriptContext = ctx.transcriptSegments
@@ -243,10 +507,6 @@ export async function analyzePodcastWithGemini(
     },
   });
 
-  const normalizedBounds = normalizeAutomationDurationBounds(
-    options.minDurationSec,
-    options.maxDurationSec
-  );
   const targetMinSec = Math.min(normalizedBounds.minClipSec, Math.max(15, ctx.durationSec));
   const targetMaxSec = Math.min(
     SHORTS_MAX_CLIP_SEC,
@@ -254,7 +514,7 @@ export async function analyzePodcastWithGemini(
   );
 
   const prompt = `Kamu adalah AI Viral Video Strategist & Produser Podcast Shorts kelas atas.
-Analisis link video podcast YouTube berikut untuk menemukan ${options.targetClipCount} momen PALING BERPOTENSI VIRAL dengan durasi UTUH ${targetMinSec}–${targetMaxSec} detik per klip.
+Analisis link video podcast YouTube berikut untuk menemukan ${options.targetClipCount} momen TERBAIK dengan durasi UTUH ${targetMinSec}–${targetMaxSec} detik per klip.
 
 Data Video:
 - URL: ${options.sourceUrl}
@@ -268,31 +528,35 @@ Data Video:
 ${
   transcriptContext
     ? `Transkrip Berstempel Waktu:\n${transcriptContext}`
-    : `Transkrip langsung belum tersedia. WAJIB gunakan pencarian web untuk menelusuri topik episode "${ctx.title}" (${ctx.channelName}), pembicara/bintang tamu, kutipan viral, pembahasan hangat netizen, atau chapter video ini, lalu petakan momen paling berpotensi viral beserta rentang timestamp yang paling logis di dalam 0 sampai ${ctx.durationSec} detik.`
+    : `Transkrip langsung belum tersedia. Gunakan pencarian web untuk menelusuri topik episode "${ctx.title}" (${ctx.channelName}), pembicara/bintang tamu, kutipan penting, atau chapter video ini, lalu petakan momen terbaik beserta rentang timestamp yang logis di dalam 0 sampai ${ctx.durationSec} detik.`
 }
 
-Kriteria Pemilihan Momen Viral & Output WAJIB:
-1. **ALUR CERITA UTUH & DETAIL (ANTI-TERPOTONG 15 DETIK)**: Setiap klip WAJIB berdurasi ${targetMinSec}–${targetMaxSec} detik (JANGAN pernah memilih potongan pendek 10–25 detik yang menggantung!). Setiap rentang \`startSec\` sampai \`endSec\` HARUS memuat 3 bagian lengkap:
-   - (a) **Hook Pembuka (0–5 detik)** yang langsung memancing rasa penasaran,
-   - (b) **Isi / Penjelasan / Cerita Detail** yang benar-benar menjawab dan mengupas tuntas topik judul Short,
-   - (c) **Klimaks / Punchline / Kesimpulan Tuntas** hingga akhir kalimat (tidak terpotong di tengah argumen).
-2. **KESESUAIAN JUDUL 100%**: Judul Short (\`title\`, \`youtubeTitle\`, \`tiktokTitle\`, \`instagramTitle\`) WAJIB sesuai dengan penjelasan detail yang benar-benar dibahas di rentang \`startSec..endSec\` (singkat, high-CTR, natural Bahasa Indonesia, tanpa clickbait kosong).${options.autoAddHashtagShorts ? ' Sertakan #Shorts pada \`youtubeTitle\`.' : ''}
-3. Beri nilai \`viralScore\` (angka bulat 70–99) dan \`viralReason\` (1 kalimat tegas mengapa potongan ini berpotensi viral/FYP). Urutkan dari \`viralScore\` tertinggi ke terendah.
-4. Buat **Caption & Deskripsi Otomatis** (\`youtubeCaption\`, \`tiktokCaption\`, \`instagramCaption\`, \`xCaption\`, \`linkedinCaption\`) yang lengkap, relevan 100% dengan isi klip, ada kalimat pembuka pancing diskusi, dan 4–6 hashtag tertarget.
-5. Pastikan \`startSec\` dan \`endSec\` berada di rentang 0..${ctx.durationSec} dengan selisih \`endSec - startSec\` WAJIB minimal ${targetMinSec} detik dan maksimal ${targetMaxSec} detik, serta sertakan 6–10 \`captionCues\` yang tersebar merata dari awal sampai akhir klip.`;
+Kriteria WAJIB:
+0. ${APPROACH_DIRECTIVES[approach]}
+1. ALUR CERITA UTUH (${targetMinSec}–${targetMaxSec} detik): JANGAN memilih potongan 10–25 detik yang menggantung. Setiap klip wajib mencakup Hook Pembuka (0–5d), Penjelasan/Cerita Detail, dan Klimaks/Kesimpulan Tuntas. Pastikan timestamp antar klip TIDAK saling tumpang tindih.
+2. KESESUAIAN JUDUL 100%: Judul di setiap platform wajib relevan dengan isi klip.${options.autoAddHashtagShorts ? ' Sertakan #Shorts pada youtubeTitle.' : ''}
+3. SKOR ESTIMASI KUALITAS KONTEN 7 DIMENSI (nilai 40–99): Isi \`qualityScores\` (hookStrength, emotionalImpact, informationValue, entertainmentValue, contextCompleteness, engagementPotential, shareabilityPotential) serta \`momentType\` ("lucu" | "emosional" | "kontroversial" | "inspiratif" | "edukatif" | "informatif") dan \`viralReason\` 1 kalimat jujur.
+4. EKSTRAKSI EPISODE: Sertakan \`chapters\` (3–5 chapter berstempel waktu) dan \`keyQuotes\` (2–4 kutipan kunci verbatim/relevan dari episode).
+5. CAPTION LINTAS PLATFORM: Buat copy lengkap untuk YouTube Shorts, TikTok, Instagram Reels, Facebook Reels, X/Twitter, dan LinkedIn dengan 4–6 hashtag relevan.
+6. SUBTITLE: Sertakan 6–10 \`captionCues\` merata dari awal sampai akhir klip.`;
 
   const responseSchema = {
     type: Type.OBJECT,
     properties: {
-      episodeSummary: {
-        type: Type.STRING,
-        description: 'Ringkasan komprehensif isi podcast dalam 2-3 kalimat Bahasa Indonesia.',
-      },
-      keyTopics: {
+      episodeSummary: { type: Type.STRING },
+      keyTopics: { type: Type.ARRAY, items: { type: Type.STRING } },
+      chapters: {
         type: Type.ARRAY,
-        items: { type: Type.STRING },
-        description: '3 topik utama yang dibahas dalam episode podcast.',
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            timeSec: { type: Type.INTEGER },
+            title: { type: Type.STRING },
+          },
+          required: ['timeSec', 'title'],
+        },
       },
+      keyQuotes: { type: Type.ARRAY, items: { type: Type.STRING } },
       clips: {
         type: Type.ARRAY,
         items: {
@@ -304,18 +568,22 @@ Kriteria Pemilihan Momen Viral & Output WAJIB:
             endSec: { type: Type.INTEGER },
             viralScore: { type: Type.INTEGER },
             viralReason: { type: Type.STRING },
-            priorityLabel: {
-              type: Type.STRING,
-              description: 'Harus bernilai "Sorotan Utama" atau "Klip Pendukung".',
+            momentType: { type: Type.STRING },
+            qualityScores: {
+              type: Type.OBJECT,
+              properties: {
+                hookStrength: { type: Type.INTEGER },
+                emotionalImpact: { type: Type.INTEGER },
+                informationValue: { type: Type.INTEGER },
+                entertainmentValue: { type: Type.INTEGER },
+                contextCompleteness: { type: Type.INTEGER },
+                engagementPotential: { type: Type.INTEGER },
+                shareabilityPotential: { type: Type.INTEGER },
+              },
             },
-            ringkasanTeks: {
-              type: Type.STRING,
-              description: 'Ringkasan padat makna dari potongan klip ini dalam 2 kalimat.',
-            },
-            poinKunci: {
-              type: Type.ARRAY,
-              items: { type: Type.STRING },
-            },
+            priorityLabel: { type: Type.STRING },
+            ringkasanTeks: { type: Type.STRING },
+            poinKunci: { type: Type.ARRAY, items: { type: Type.STRING } },
             transcriptExcerpt: { type: Type.STRING },
             captionCues: {
               type: Type.ARRAY,
@@ -338,6 +606,9 @@ Kriteria Pemilihan Momen Viral & Output WAJIB:
             instagramTitle: { type: Type.STRING },
             instagramCaption: { type: Type.STRING },
             instagramHashtags: { type: Type.ARRAY, items: { type: Type.STRING } },
+            facebookTitle: { type: Type.STRING },
+            facebookCaption: { type: Type.STRING },
+            facebookHashtags: { type: Type.ARRAY, items: { type: Type.STRING } },
             xTitle: { type: Type.STRING },
             xCaption: { type: Type.STRING },
             xHashtags: { type: Type.ARRAY, items: { type: Type.STRING } },
@@ -391,10 +662,12 @@ Kriteria Pemilihan Momen Viral & Output WAJIB:
         ];
 
   let response: Awaited<ReturnType<typeof ai.models.generateContent>> | null = null;
+  let usedModel = attempts[0].model;
   let lastErr: unknown = null;
 
   for (const attempt of attempts) {
     try {
+      usedModel = attempt.model;
       response = await ai.models.generateContent({
         model: attempt.model,
         contents: prompt,
@@ -405,7 +678,7 @@ Kriteria Pemilihan Momen Viral & Output WAJIB:
           ...(attempt.useSearch ? { tools: [{ googleSearch: {} }] } : {}),
           responseMimeType: 'application/json',
           responseSchema,
-          abortSignal: AbortSignal.timeout(attempt.useSearch ? 22_000 : 35_000),
+          abortSignal: AbortSignal.timeout(attempt.useSearch ? 24_000 : 35_000),
         },
       });
       break;
@@ -438,44 +711,32 @@ Kriteria Pemilihan Momen Viral & Output WAJIB:
     throw new Error('Model AI tidak mengembalikan hasil analisis. Silakan coba lagi.');
   }
 
-  let parsed: {
-    episodeSummary: string;
-    keyTopics: string[];
-    clips: Array<{
-      title: string;
-      hookLine: string;
-      startSec: number;
-      endSec: number;
-      viralScore?: number;
-      viralReason?: string;
-      priorityLabel?: string;
-      ringkasanTeks: string;
-      poinKunci: string[];
-      transcriptExcerpt: string;
-      captionCues: Array<{ offsetSec: number; durationSec: number; text: string }>;
-      youtubeTitle: string;
-      youtubeCaption: string;
-      youtubeHashtags: string[];
-      tiktokTitle: string;
-      tiktokCaption: string;
-      tiktokHashtags: string[];
-      instagramTitle: string;
-      instagramCaption: string;
-      instagramHashtags: string[];
-      xTitle: string;
-      xCaption: string;
-      xHashtags: string[];
-      linkedinTitle: string;
-      linkedinCaption: string;
-      linkedinHashtags: string[];
-    }>;
-  };
-
+  let parsedRaw: unknown;
   try {
-    parsed = JSON.parse(rawText);
+    parsedRaw = JSON.parse(rawText);
   } catch {
     throw new Error('Format respons analisis AI tidak valid. Silakan ulangi proses.');
   }
+
+  const zodResult = AnalyzerResponseZodSchema.safeParse(parsedRaw);
+  if (!zodResult.success) {
+    throw new Error('Struktur JSON hasil analisis AI tidak lengkap. Silakan ulangi proses.');
+  }
+  const parsed = zodResult.data;
+
+  const chapters: EpisodeChapter[] = (parsed.chapters ?? [])
+    .filter((ch) => Number.isFinite(ch.timeSec) && ch.title.trim().length > 0)
+    .map((ch) => ({
+      timeSec: Math.max(0, Math.min(ctx.durationSec, Math.round(ch.timeSec))),
+      title: ch.title.trim().slice(0, 100),
+    }))
+    .sort((a, b) => a.timeSec - b.timeSec)
+    .slice(0, 8);
+
+  const keyQuotes = (parsed.keyQuotes ?? [])
+    .map((q) => q.trim())
+    .filter(Boolean)
+    .slice(0, 6);
 
   const episode: PodcastEpisode = {
     id: options.episodeId,
@@ -489,6 +750,8 @@ Kriteria Pemilihan Momen Viral & Output WAJIB:
     transcriptSource: ctx.transcriptSource,
     episodeSummary: parsed.episodeSummary,
     keyTopics: (parsed.keyTopics ?? []).slice(0, 4),
+    chapters,
+    keyQuotes,
     createdAt: new Date().toISOString(),
   };
 
@@ -502,11 +765,7 @@ Kriteria Pemilihan Momen Viral & Output WAJIB:
     return clean.slice(0, 6);
   };
 
-  const sortedRawClips = [...(parsed.clips ?? [])]
-    .sort((a, b) => (Number(b.viralScore) || 0) - (Number(a.viralScore) || 0))
-    .slice(0, options.targetClipCount);
-
-  const clips: PodcastClip[] = sortedRawClips.map((c, idx) => {
+  const normalizedRawClips = parsed.clips.map((c, idx) => {
     const rawStart = Number.isFinite(Number(c.startSec)) ? Number(c.startSec) : idx * 120;
     const rawEnd = Number.isFinite(Number(c.endSec)) ? Number(c.endSec) : rawStart + targetMinSec;
     const clamped = clampClipRange(
@@ -516,7 +775,23 @@ Kriteria Pemilihan Momen Viral & Output WAJIB:
       targetMinSec,
       targetMaxSec
     );
+    const qualityScores = computeWeightedContentQualityScore(
+      { ...c.qualityScores, momentType: c.momentType },
+      Number(c.viralScore) || 88 - idx * 3
+    );
+    return { c, clamped, qualityScores };
+  });
 
+  const dedupedClips = deduplicateOverlappingClips(
+    normalizedRawClips.map((item) => ({
+      ...item,
+      startSec: item.clamped.startSec,
+      endSec: item.clamped.endSec,
+      viralScore: item.qualityScores.overallScore,
+    }))
+  ).slice(0, options.targetClipCount);
+
+  const clips: PodcastClip[] = dedupedClips.map(({ c, clamped, qualityScores }, idx) => {
     const normalizePlatform = (
       title: string,
       caption: string,
@@ -530,9 +805,8 @@ Kriteria Pemilihan Momen Viral & Output WAJIB:
 
     const ytTitle =
       options.autoAddHashtagShorts && !/#shorts/i.test(c.youtubeTitle)
-        ? `${c.youtubeTitle} #Shorts`
-        : c.youtubeTitle;
-    const viralScore = Math.max(65, Math.min(99, Math.round(Number(c.viralScore) || (92 - idx * 4))));
+        ? `${c.youtubeTitle || c.title} #Shorts`
+        : c.youtubeTitle || c.title;
     const ytTags = ensureTags(
       c.youtubeHashtags,
       options.autoAddHashtagShorts ? '#Shorts' : undefined
@@ -546,10 +820,11 @@ Kriteria Pemilihan Momen Viral & Output WAJIB:
       hookLine: c.hookLine,
       startSec: clamped.startSec,
       endSec: clamped.endSec,
-      viralScore,
+      viralScore: qualityScores.overallScore,
+      qualityScores,
       viralReason:
         c.viralReason?.trim() ||
-        'Memiliki hook pembuka tajam di 3 detik pertama dengan potensi diskusi tinggi.',
+        'Memiliki hook pembuka tajam di 3 detik pertama dengan penjelasan yang utuh.',
       autoGeneratedTitle: c.youtubeTitle?.replace(/\s*#shorts\s*/gi, '').trim() || c.title,
       autoGeneratedCaption: `${c.youtubeCaption} ${ytTags.join(' ')}`.trim(),
       ringkasanTeks: c.ringkasanTeks,
@@ -570,6 +845,9 @@ Kriteria Pemilihan Momen Viral & Output WAJIB:
               },
             ],
       priorityLabel: c.priorityLabel === 'Klip Pendukung' ? 'Klip Pendukung' : 'Sorotan Utama',
+      contentStyle: approach,
+      suggestedPlatform: APPROACH_PLATFORM_HINT[approach],
+      scoringModelVersion: 'aicliper-q7-v2.0',
       status: 'draft',
       publishedPlatforms: [],
       platformCopies: {
@@ -580,12 +858,43 @@ Kriteria Pemilihan Momen Viral & Output WAJIB:
           options.autoAddHashtagShorts ? '#Shorts' : undefined
         ),
         tiktok: normalizePlatform(c.tiktokTitle, c.tiktokCaption, c.tiktokHashtags),
-        instagram_reels: normalizePlatform(c.instagramTitle, c.instagramCaption, c.instagramHashtags),
+        instagram_reels: normalizePlatform(
+          c.instagramTitle,
+          c.instagramCaption,
+          c.instagramHashtags
+        ),
+        facebook_reels: normalizePlatform(
+          c.facebookTitle || c.instagramTitle || c.title,
+          c.facebookCaption || c.instagramCaption || c.ringkasanTeks,
+          c.facebookHashtags?.length ? c.facebookHashtags : ['#FacebookReels', ...c.instagramHashtags]
+        ),
         x_twitter: normalizePlatform(c.xTitle, c.xCaption, c.xHashtags),
         linkedin: normalizePlatform(c.linkedinTitle, c.linkedinCaption, c.linkedinHashtags),
       } satisfies Record<SocialPlatform, { title: string; caption: string; hashtags: string[] }>,
     };
   });
 
-  return { episode, clips };
+  // Save in-memory cache for repeated requests on same video
+  analysisCache.set(cacheKey, {
+    episode: structuredClone(episode),
+    clips: structuredClone(clips),
+    expiresAtMs: Date.now() + ANALYSIS_CACHE_TTL_MS,
+  });
+  if (analysisCache.size > 100) {
+    const firstKey = analysisCache.keys().next().value;
+    if (firstKey) analysisCache.delete(firstKey);
+  }
+
+  const usageMeta = (response as { usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number } }).usageMetadata;
+
+  return {
+    episode,
+    clips,
+    usage: {
+      model: usedModel,
+      promptTokens: Number(usageMeta?.promptTokenCount ?? 0),
+      outputTokens: Number(usageMeta?.candidatesTokenCount ?? 0),
+      cached: false,
+    },
+  };
 }

@@ -34,12 +34,20 @@ import {
   normalizeClipOverlayStyle,
 } from '../utils/clipOverlayStyle';
 import { ClipOverlayEditorModal } from './ClipOverlayEditorModal';
+import { apiFetch } from '../utils/apiClient';
 
-type UiRenderLayout = 'shorts_full_bleed' | 'shorts_studio_focus' | 'full_16_9_focus';
+type UiRenderLayout =
+  | 'shorts_full_bleed'
+  | 'shorts_studio_focus'
+  | 'full_16_9_focus'
+  | 'square_1_1'
+  | 'portrait_4_5';
 
 function normalizeUiLayout(layout?: ClipRenderLayout): UiRenderLayout {
   if (layout === 'full_16_9_focus' || layout === 'landscape_16_9') return 'full_16_9_focus';
   if (layout === 'shorts_studio_focus' || layout === 'vertical_9_16') return 'shorts_studio_focus';
+  if (layout === 'square_1_1') return 'square_1_1';
+  if (layout === 'portrait_4_5') return 'portrait_4_5';
   return 'shorts_full_bleed';
 }
 
@@ -68,6 +76,8 @@ interface ShortsPreviewStageProps {
   defaultEmotionEffectsEnabled: boolean;
   defaultAiIntroEnabled: boolean;
   ultraHdEnabled: boolean;
+  isAuthenticated?: boolean;
+  canManageCookies?: boolean;
   onSaveTrim: (clipId: string, startSec: number, endSec: number) => Promise<void>;
   onSaveOverlayStyle: (clipId: string, overlayStyle: ClipOverlayStyle) => Promise<void>;
   onStoreUpdate: (nextStore: StudioStoreState) => void;
@@ -81,6 +91,8 @@ export function ShortsPreviewStage({
   defaultEmotionEffectsEnabled,
   defaultAiIntroEnabled,
   ultraHdEnabled,
+  isAuthenticated = false,
+  canManageCookies = false,
   onSaveTrim,
   onSaveOverlayStyle,
   onStoreUpdate,
@@ -129,8 +141,12 @@ export function ShortsPreviewStage({
   const activeJobIdRef = useRef<string | null>(null);
 
   useEffect(() => {
+    if (!isAuthenticated) {
+      setHasYoutubeCookies(false);
+      return;
+    }
     let active = true;
-    fetch('/api/automation/cookies-status')
+    apiFetch('/api/automation/cookies-status')
       .then((r) => (r.ok ? r.json() : null))
       .then((d: { hasYoutubeCookies?: boolean } | null) => {
         if (active && d) setHasYoutubeCookies(Boolean(d.hasYoutubeCookies));
@@ -139,7 +155,7 @@ export function ShortsPreviewStage({
     return () => {
       active = false;
     };
-  }, []);
+  }, [isAuthenticated]);
 
   const clipDuration = Math.max(5, clip.endSec - clip.startSec);
 
@@ -321,7 +337,7 @@ export function ShortsPreviewStage({
     setIsUploadingSource(true);
     setRenderError(null);
     try {
-      const res = await fetch(`/api/episodes/${episode.id}/upload-video`, {
+      const res = await apiFetch(`/api/episodes/${episode.id}/upload-video`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/octet-stream' },
         body: file,
@@ -352,7 +368,7 @@ export function ShortsPreviewStage({
     setIsSavingCookies(true);
     setRenderError(null);
     try {
-      const res = await fetch('/api/automation/youtube-cookies', {
+      const res = await apiFetch('/api/automation/youtube-cookies', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ cookiesTxt: cookiesDraft }),
@@ -378,7 +394,7 @@ export function ShortsPreviewStage({
     setIsSavingDirectUrl(true);
     setRenderError(null);
     try {
-      const res = await fetch(`/api/episodes/${episode.id}/source-url`, {
+      const res = await apiFetch(`/api/episodes/${episode.id}/source-url`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ directVideoUrl: directUrlDraft }),
@@ -547,7 +563,13 @@ export function ShortsPreviewStage({
               )
             }
             className={`w-full rounded-xl border border-slate-200 bg-slate-950 ${
-              isVerticalRendered ? 'max-w-[290px] aspect-[9/16]' : 'aspect-video'
+              effectiveRenderedLayout === 'square_1_1'
+                ? 'max-w-[320px] aspect-square'
+                : effectiveRenderedLayout === 'portrait_4_5'
+                  ? 'max-w-[300px] aspect-[4/5]'
+                  : isVerticalRendered
+                    ? 'max-w-[290px] aspect-[9/16]'
+                    : 'aspect-video'
             }`}
           />
           {videoPlaybackError && (
@@ -580,7 +602,11 @@ export function ShortsPreviewStage({
                     ? 'Full Frame 9:16'
                     : effectiveRenderedLayout === 'shorts_studio_focus'
                       ? 'Shorts 9:16 Studio'
-                      : 'Video Full 16:9'}
+                      : effectiveRenderedLayout === 'square_1_1'
+                        ? 'Square 1:1 Feed'
+                        : effectiveRenderedLayout === 'portrait_4_5'
+                          ? 'Portrait 4:5 IG/FB'
+                          : 'Video Full 16:9'}
                   {' · '}
                   {(clip.renderedQuality ?? renderQuality).toUpperCase()}
                   {clip.renderedFileSizeBytes
@@ -803,6 +829,12 @@ export function ShortsPreviewStage({
             <option value="shorts_studio_focus">
               Shorts 9:16 Studio (Latar Blur + Pembicara Terpusat)
             </option>
+            <option value="portrait_4_5">
+              Portrait 4:5 Feed (Instagram / Facebook / LinkedIn)
+            </option>
+            <option value="square_1_1">
+              Square 1:1 (Feed Persegi Multi-Platform)
+            </option>
             <option value="full_16_9_focus">
               Video Full 16:9 (Layar Lebar Auto-Fokus)
             </option>
@@ -1015,9 +1047,11 @@ export function ShortsPreviewStage({
           >
             <KeyRound className="w-3.5 h-3.5 text-slate-500" aria-hidden="true" />
             <span>
-              {hasYoutubeCookies
-                ? 'Cookies YouTube Aktif (Unduh 1080p/4K Asli) · Ubah'
-                : 'Pasang Cookies YouTube untuk Sumber 1080p/4K Asli'}
+              {canManageCookies
+                ? hasYoutubeCookies
+                  ? 'Link MP4 Langsung / Cookies YouTube Aktif · Ubah'
+                  : 'Link MP4 Langsung / Pasang Cookies YouTube'
+                : 'Pasang Link Video .MP4 Langsung (Alternatif)'}
             </span>
           </button>
         </div>
@@ -1093,50 +1127,51 @@ export function ShortsPreviewStage({
               </div>
             </div>
 
-            <div className="pt-2.5 border-t border-slate-200 space-y-2">
-              <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-900">
-                <KeyRound className="w-3.5 h-3.5 text-red-600 shrink-0" aria-hidden="true" />
-                <span>Alternatif 2 — Cookies YouTube (Netscape cookies.txt):</span>
+            {canManageCookies && (
+              <div className="pt-2.5 border-t border-slate-200 space-y-2">
+                <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-900">
+                  <KeyRound className="w-3.5 h-3.5 text-red-600 shrink-0" aria-hidden="true" />
+                  <span>Alternatif 2 — Cookies YouTube Server (Admin):</span>
+                </div>
+                <p className="text-[11px] text-slate-600 leading-relaxed">
+                  Tempel isi file <code>cookies.txt</code> format Netscape agar server cloud bisa
+                  mengunduh langsung dari YouTube tanpa terkena cek bot.
+                </p>
+                <label htmlFor="inline-cookies-txt" className="sr-only">
+                  Tempel cookies.txt YouTube
+                </label>
+                <textarea
+                  id="inline-cookies-txt"
+                  rows={2}
+                  value={cookiesDraft}
+                  onChange={(e) => setCookiesDraft(e.target.value)}
+                  placeholder="# Netscape HTTP Cookie File..."
+                  className="w-full p-2 text-xs font-mono bg-white border border-slate-200 rounded-md focus:border-red-600 focus:outline-none"
+                />
+                <div className="flex flex-col gap-2">
+                  <button
+                    type="button"
+                    disabled={isSavingCookies}
+                    onClick={handleSaveCookiesAndRender}
+                    className="w-full h-8 px-3 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-md cursor-pointer disabled:opacity-60"
+                  >
+                    {isSavingCookies ? 'Menyimpan...' : 'Simpan Cookies & Render 1080p/4K Asli'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCopyLocalCmd}
+                    className="w-full h-8 inline-flex items-center justify-center gap-1.5 px-3 text-xs font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-100 rounded-md cursor-pointer"
+                  >
+                    {copiedCmd ? (
+                      <Check className="w-3.5 h-3.5 text-emerald-700" aria-hidden="true" />
+                    ) : (
+                      <Copy className="w-3.5 h-3.5" aria-hidden="true" />
+                    )}
+                    <span>{copiedCmd ? 'Perintah Tersalin' : 'Salin Perintah yt-dlp Lokal'}</span>
+                  </button>
+                </div>
               </div>
-              <p className="text-[11px] text-slate-600 leading-relaxed">
-                Tempel isi file <code>cookies.txt</code> format Netscape dari ekstensi{' '}
-                <em>Get cookies.txt LOCALLY</em> agar server cloud bisa mengunduh langsung dari
-                YouTube tanpa terkena cek bot.
-              </p>
-              <label htmlFor="inline-cookies-txt" className="sr-only">
-                Tempel cookies.txt YouTube
-              </label>
-              <textarea
-                id="inline-cookies-txt"
-                rows={2}
-                value={cookiesDraft}
-                onChange={(e) => setCookiesDraft(e.target.value)}
-                placeholder="# Netscape HTTP Cookie File..."
-                className="w-full p-2 text-xs font-mono bg-white border border-slate-200 rounded-md focus:border-red-600 focus:outline-none"
-              />
-              <div className="flex flex-col gap-2">
-                <button
-                  type="button"
-                  disabled={isSavingCookies}
-                  onClick={handleSaveCookiesAndRender}
-                  className="w-full h-8 px-3 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-md cursor-pointer disabled:opacity-60"
-                >
-                  {isSavingCookies ? 'Menyimpan...' : 'Simpan Cookies & Render 1080p/4K Asli'}
-                </button>
-                <button
-                  type="button"
-                  onClick={handleCopyLocalCmd}
-                  className="w-full h-8 inline-flex items-center justify-center gap-1.5 px-3 text-xs font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-100 rounded-md cursor-pointer"
-                >
-                  {copiedCmd ? (
-                    <Check className="w-3.5 h-3.5 text-emerald-700" aria-hidden="true" />
-                  ) : (
-                    <Copy className="w-3.5 h-3.5" aria-hidden="true" />
-                  )}
-                  <span>{copiedCmd ? 'Perintah Tersalin' : 'Salin Perintah yt-dlp Lokal'}</span>
-                </button>
-              </div>
-            </div>
+            )}
           </div>
         )}
       </div>

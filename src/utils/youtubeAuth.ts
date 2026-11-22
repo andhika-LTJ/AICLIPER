@@ -8,6 +8,7 @@ import {
   type User,
 } from '@firebase/auth';
 import firebaseConfig from '../../firebase-applet-config.json';
+import type { AccountStatus, PlanTier, UserRole } from '../types/clipper';
 import { formatGoogleAuthError } from './youtubeAuthErrors';
 
 export const YOUTUBE_OAUTH_SCOPES = [
@@ -23,6 +24,9 @@ export interface VerifiedGoogleIdentity {
   signInProvider: string;
   authTime: number;
   expiresAt: number;
+  role?: UserRole;
+  status?: AccountStatus;
+  planTier?: PlanTier;
 }
 
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
@@ -48,6 +52,20 @@ export interface GoogleAuthSession {
   accessToken: string | null;
 }
 
+export function getCurrentFirebaseUser(): User | null {
+  return auth.currentUser;
+}
+
+export async function getCurrentFirebaseIdToken(forceRefresh = false): Promise<string | null> {
+  const user = auth.currentUser;
+  if (!user) return null;
+  try {
+    return await user.getIdToken(forceRefresh);
+  } catch {
+    return null;
+  }
+}
+
 export async function verifyGoogleSessionOnServer(
   user: User,
   forceRefresh = false
@@ -58,6 +76,7 @@ export async function verifyGoogleSessionOnServer(
     headers: {
       'Content-Type': 'application/json',
       'X-Firebase-Id-Token': idToken,
+      'X-Requested-With': 'XMLHttpRequest',
     },
     body: JSON.stringify({ idToken }),
   });
@@ -174,6 +193,20 @@ export function clearYouTubeAccessToken(): void {
 }
 
 export async function signOutGoogleSession(): Promise<void> {
+  const token = await getCurrentFirebaseIdToken(false);
+  if (token) {
+    try {
+      await fetch('/api/auth/logout', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'X-Requested-With': 'XMLHttpRequest',
+        },
+      });
+    } catch {
+      // Best-effort server revocation before local sign-out
+    }
+  }
   cachedAccessToken = null;
   await signOut(auth);
 }

@@ -14,6 +14,7 @@ interface ClipListPanelProps {
 const STATUS_LABEL: Record<PodcastClip['status'], { text: string; tone: string }> = {
   draft: { text: 'Siap Tinjau', tone: 'text-slate-600' },
   queued: { text: 'Dalam Antrean', tone: 'text-amber-700' },
+  scheduled: { text: 'Terjadwal', tone: 'text-blue-700' },
   published_auto: { text: 'Diposting Otomatis', tone: 'text-emerald-700' },
   published_manual: { text: 'Diposting Manual', tone: 'text-emerald-700' },
   failed: { text: 'Gagal Kirim', tone: 'text-red-600' },

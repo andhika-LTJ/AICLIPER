@@ -35,6 +35,16 @@ export const INITIAL_STUDIO_STATE: StudioStoreState = {
         'Teknik memilih argumen kontras dalam wawancara podcast',
         'Otomatisasi subtitle dinamis dan ringkasan lintas platform',
       ],
+      chapters: [
+        { timeSec: 0, title: 'Pembukaan & Masalah Klip Podcast Sepi' },
+        { timeSec: 412, title: 'Aturan 3 Detik Pertama di Shorts & Reels' },
+        { timeSec: 1180, title: 'Workflow 1 Episode Jadi 5 Konten Lintas Kanal' },
+        { timeSec: 1945, title: 'Kapan Auto-Post vs Kurasi Manual' },
+      ],
+      keyQuotes: [
+        'Penonton Shorts tidak menunggu konteks lima belas detik; mereka memutuskan bertahan atau geser dalam tiga detik pertama.',
+        'Satu episode berdurasi satu jam punya minimal empat argumen yang berdiri sendiri.',
+      ],
       createdAt: '2026-11-16T07:30:00.000Z',
     },
   ],
@@ -63,6 +73,19 @@ export const INITIAL_STUDIO_STATE: StudioStoreState = {
         { offsetSec: 14, durationSec: 4, text: 'hanya dalam tiga detik pertama.' },
       ],
       priorityLabel: 'Sorotan Utama',
+      viralScore: 92,
+      viralReason: 'Hook pembuka langsung menantang kebiasaan editor podcast dengan angka retensi yang konkret.',
+      qualityScores: {
+        hookStrength: 95,
+        emotionalImpact: 82,
+        informationValue: 94,
+        entertainmentValue: 84,
+        contextCompleteness: 92,
+        engagementPotential: 91,
+        shareabilityPotential: 93,
+        overallScore: 91,
+        momentType: 'edukatif',
+      },
       status: 'draft',
       publishedPlatforms: [],
       platformCopies: {
@@ -83,6 +106,12 @@ export const INITIAL_STUDIO_STATE: StudioStoreState = {
           caption:
             'Tiga detik pertama menentukan retensi. Cek ringkasan poin kuncinya dan terapkan di episode berikutnya.',
           hashtags: ['#reelsindonesia', '#podcast', '#strategikonten'],
+        },
+        facebook_reels: {
+          title: 'Kenapa Klip Podcast Sering Gagal di 3 Detik Awal?',
+          caption:
+            'Jangan mulai klip dari basa-basi pembuka. Langsung masuk ke pernyataan paling tajam agar penonton betah sampai akhir.',
+          hashtags: ['#FacebookReels', '#PodcastIndonesia', '#TipsKreator'],
         },
         x_twitter: {
           title: 'Pelajaran cepat soal retensi klip podcast',
@@ -121,6 +150,19 @@ export const INITIAL_STUDIO_STATE: StudioStoreState = {
         { offsetSec: 14, durationSec: 4, text: 'bisa selesai dalam hitungan menit.' },
       ],
       priorityLabel: 'Sorotan Utama',
+      viralScore: 88,
+      viralReason: 'Memberikan blueprint praktis yang mudah disimpan dan dibagikan oleh tim konten & kreator.',
+      qualityScores: {
+        hookStrength: 87,
+        emotionalImpact: 78,
+        informationValue: 93,
+        entertainmentValue: 80,
+        contextCompleteness: 90,
+        engagementPotential: 86,
+        shareabilityPotential: 92,
+        overallScore: 87,
+        momentType: 'informatif',
+      },
       status: 'published_manual',
       publishedPlatforms: ['youtube_shorts', 'x_twitter'],
       lastPublishedAt: '2026-11-16T07:45:00.000Z',
@@ -140,6 +182,11 @@ export const INITIAL_STUDIO_STATE: StudioStoreState = {
           title: 'Sistem Repurpose Podcast',
           caption: 'Berhenti bikin konten dari nol setiap hari. Maksimalkan arsip podcastmu.',
           hashtags: ['#repurposecontent', '#reels', '#kreator'],
+        },
+        facebook_reels: {
+          title: 'Satu Episode Podcast Jadi Stok Konten Seminggu',
+          caption: 'Pecah satu obrolan panjang menjadi video vertikal dan ringkasan siap unggah.',
+          hashtags: ['#FacebookReels', '#ContentWorkflow', '#Podcast'],
         },
         x_twitter: {
           title: '1 podcast 60 menit = 4 klip + 1 ringkasan teks',
@@ -177,6 +224,19 @@ export const INITIAL_STUDIO_STATE: StudioStoreState = {
         { offsetSec: 9, durationSec: 4, text: 'atau tinjau manual 30 detik sebelum naik ke Shorts.' },
       ],
       priorityLabel: 'Klip Pendukung',
+      viralScore: 84,
+      viralReason: 'Menjawab dilema nyata kreator soal otomasi vs kontrol editorial dengan sudut pandang seimbang.',
+      qualityScores: {
+        hookStrength: 83,
+        emotionalImpact: 76,
+        informationValue: 88,
+        entertainmentValue: 78,
+        contextCompleteness: 89,
+        engagementPotential: 85,
+        shareabilityPotential: 84,
+        overallScore: 84,
+        momentType: 'edukatif',
+      },
       status: 'draft',
       publishedPlatforms: [],
       platformCopies: {
@@ -195,6 +255,11 @@ export const INITIAL_STUDIO_STATE: StudioStoreState = {
           title: 'Menjaga Kualitas Klip Otomatis',
           caption: 'Kecepatan otomatisasi bertemu kontrol editorial.',
           hashtags: ['#instagramreels', '#editorial', '#podcast'],
+        },
+        facebook_reels: {
+          title: 'Auto-Post atau Tinjau Manual Sebelum Unggah?',
+          caption: 'Gunakan AI untuk kecepatan, tapi tetap pegang kendali editorial untuk topik penting.',
+          hashtags: ['#FacebookReels', '#Editorial', '#AIWorkflow'],
         },
         x_twitter: {
           title: 'Otomatisasi + Kurasi Manual',

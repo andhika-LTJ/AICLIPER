@@ -16,6 +16,7 @@ import {
   buildFfmpegCommand,
   buildSocialShareUrl,
   generateSrtFromClip,
+  generateVttFromClip,
   PLATFORM_LABELS,
 } from '../utils/youtube';
 import { GoogleAccountBadge, GoogleSignInButton } from './GoogleSignInButton';
@@ -43,6 +44,7 @@ const PLATFORMS: SocialPlatform[] = [
   'youtube_shorts',
   'tiktok',
   'instagram_reels',
+  'facebook_reels',
   'x_twitter',
   'linkedin',
 ];
@@ -101,6 +103,17 @@ export function ClipPublisherPanel({
     const a = document.createElement('a');
     a.href = url;
     a.download = `${clip.id}.srt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleDownloadVtt = () => {
+    const vttContent = generateVttFromClip(clip);
+    const blob = new Blob([vttContent], { type: 'text/vtt;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${clip.id}.vtt`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -166,17 +179,51 @@ export function ClipPublisherPanel({
               <Download className="w-3.5 h-3.5" aria-hidden="true" />
               <span>Unduh .SRT</span>
             </button>
+            <button
+              type="button"
+              onClick={handleDownloadVtt}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg studio-transition cursor-pointer whitespace-nowrap"
+            >
+              <Download className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>Unduh .VTT</span>
+            </button>
           </div>
         </div>
 
-        {clip.viralReason && (
-          <div className="px-3.5 py-2.5 bg-amber-50/70 border border-amber-200/80 rounded-lg text-xs text-amber-950 leading-relaxed flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-            {typeof clip.viralScore === 'number' && (
-              <span className="font-mono tabular-nums font-bold text-amber-900">
-                Skor Viral {clip.viralScore}/100:
-              </span>
+        {(clip.viralReason || clip.qualityScores) && (
+          <div className="p-3.5 bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200/80 dark:border-amber-800/60 rounded-lg space-y-2.5">
+            {clip.viralReason && (
+              <div className="text-xs text-amber-950 dark:text-amber-100 leading-relaxed flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                {typeof clip.viralScore === 'number' && (
+                  <span className="font-mono tabular-nums font-bold text-amber-900 dark:text-amber-200">
+                    Estimasi Kualitas Konten {clip.viralScore}/100:
+                  </span>
+                )}
+                <span>{clip.viralReason}</span>
+              </div>
             )}
-            <span>{clip.viralReason}</span>
+            {clip.qualityScores && (
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-2 border-t border-amber-200/60 dark:border-amber-800/50 text-[11px]">
+                {(
+                  [
+                    ['Hook', clip.qualityScores.hookStrength],
+                    ['Emosi', clip.qualityScores.emotionalImpact],
+                    ['Informasi', clip.qualityScores.informationValue],
+                    ['Hiburan', clip.qualityScores.entertainmentValue],
+                    ['Utuh', clip.qualityScores.contextCompleteness],
+                    ['Interaksi', clip.qualityScores.engagementPotential],
+                    ['Bagikan', clip.qualityScores.shareabilityPotential],
+                  ] as const
+                ).map(([label, score]) => (
+                  <div key={label} className="flex items-center justify-between gap-1 bg-white/80 dark:bg-slate-900/70 px-2 py-1 rounded border border-amber-200/60 dark:border-amber-900/50">
+                    <span className="text-slate-600 dark:text-slate-300">{label}</span>
+                    <span className="font-mono tabular-nums font-bold text-slate-900 dark:text-white">
+                      {score}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 

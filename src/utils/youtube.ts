@@ -149,6 +149,45 @@ function formatSrtTime(totalSeconds: number): string {
   return `${p2(hours)}:${p2(minutes)}:${p2(seconds)},${p3(ms)}`;
 }
 
+function formatVttTime(totalSeconds: number): string {
+  const safeMs = Math.max(0, Math.round(totalSeconds * 1000));
+  const hours = Math.floor(safeMs / 3600000);
+  const minutes = Math.floor((safeMs % 3600000) / 60000);
+  const seconds = Math.floor((safeMs % 60000) / 1000);
+  const ms = safeMs % 1000;
+  const p2 = (n: number) => String(n).padStart(2, '0');
+  const p3 = (n: number) => String(n).padStart(3, '0');
+  return `${p2(hours)}:${p2(minutes)}:${p2(seconds)}.${p3(ms)}`;
+}
+
+/**
+ * Generates a WebVTT (.vtt) subtitle file string for a trimmed clip starting from 00:00:00.000.
+ */
+export function generateVttFromClip(clip: PodcastClip): string {
+  const clipDuration = Math.max(1, clip.endSec - clip.startSec);
+  const cues =
+    clip.captionCues.length > 0
+      ? clip.captionCues
+      : [
+          {
+            offsetSec: 0,
+            durationSec: Math.min(5, clipDuration),
+            text: clip.hookLine || clip.title,
+          },
+        ];
+
+  const body = cues
+    .filter((cue) => cue.offsetSec < clipDuration)
+    .map((cue, idx) => {
+      const start = Math.max(0, cue.offsetSec);
+      const end = Math.min(clipDuration, start + Math.max(1, cue.durationSec));
+      return `${idx + 1}\n${formatVttTime(start)} --> ${formatVttTime(end)}\n${cue.text.trim()}`;
+    })
+    .join('\n\n');
+
+  return `WEBVTT\n\n${body}\n`;
+}
+
 /**
  * Generates an SRT subtitle file string for a trimmed clip starting from 00:00:00,000.
  */
@@ -211,6 +250,8 @@ export function buildSocialShareUrl(
       return 'https://www.tiktok.com/creator-center/upload';
     case 'instagram_reels':
       return 'https://www.instagram.com/';
+    case 'facebook_reels':
+      return 'https://www.facebook.com/reels/create';
   }
 }
 
@@ -218,6 +259,7 @@ export const PLATFORM_LABELS: Record<SocialPlatform, string> = {
   youtube_shorts: 'YouTube Shorts',
   tiktok: 'TikTok',
   instagram_reels: 'Instagram Reels',
+  facebook_reels: 'Facebook Reels',
   x_twitter: 'X / Twitter',
   linkedin: 'LinkedIn',
 };

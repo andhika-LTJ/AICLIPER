@@ -58,6 +58,7 @@ import {
   INTRO_FPS,
   normalizeAiClipIntro,
 } from './videoIntroMath.ts';
+import { assertSafeResourceId, resolveConfinedPath } from './security.ts';
 
 const execFileAsync = promisify(execFile);
 
@@ -92,20 +93,23 @@ function ensureDirs() {
 
 export function getUploadedVideoPath(episodeId: string): string | null {
   ensureDirs();
+  const safeId = assertSafeResourceId(episodeId, 'Episode ID');
   const candidates = ['.mp4', '.webm', '.mov', '.mkv'].map((ext) =>
-    path.join(UPLOADS_DIR, `${episodeId}${ext}`)
+    resolveConfinedPath(UPLOADS_DIR, `${safeId}${ext}`)
   );
   return candidates.find((p) => fs.existsSync(p)) ?? null;
 }
 
 export function getUploadTargetPath(episodeId: string): string {
   ensureDirs();
-  return path.join(UPLOADS_DIR, `${episodeId}.mp4`);
+  const safeId = assertSafeResourceId(episodeId, 'Episode ID');
+  return resolveConfinedPath(UPLOADS_DIR, `${safeId}.mp4`);
 }
 
 export function getRenderedClipPath(clipId: string): string | null {
   ensureDirs();
-  const target = path.join(RENDERS_DIR, `${clipId}.mp4`);
+  const safeId = assertSafeResourceId(clipId, 'Clip ID');
+  const target = resolveConfinedPath(RENDERS_DIR, `${safeId}.mp4`);
   return fs.existsSync(target) ? target : null;
 }
 
@@ -1340,6 +1344,45 @@ export function buildStudioFilterComplex(params: {
     ].join(';');
   }
 
+  if (layout === 'square_1_1' || layout === 'portrait_4_5') {
+    const aspectW = layout === 'square_1_1' ? 1 : 4;
+    const aspectH = layout === 'square_1_1' ? 1 : 5;
+    const safeZoom = sourceH >= 720 ? Math.max(1.02, Math.min(1.22, avgZoom * 0.9)) : 1.0;
+    const { cropW, cropH } = computeCropWindow(sourceW, sourceH, aspectW, aspectH, safeZoom);
+    const xExpr = buildSmoothCropAxisExpression({
+      keyframes: intelligence.keyframes,
+      axis: 'x',
+      sourceSize: sourceW,
+      cropSize: cropW,
+    });
+    const yExpr = buildSmoothCropAxisExpression({
+      keyframes: intelligence.keyframes,
+      axis: 'y',
+      sourceSize: sourceH,
+      cropSize: cropH,
+    });
+
+    const clarity = buildFastClarityChain(sourceH, outW, outH, quality);
+    const topBand = Math.round(outH * 0.14);
+    const botBand = Math.round(outH * 0.20);
+    const mainBody = `crop=w=${cropW}:h=${cropH}:x='${xExpr}':y='${yExpr}',${clarity},setsar=1,format=yuv420p,drawbox=x=0:y=0:w=${outW}:h=${topBand}:color=0x000000@0.24:t=fill,drawbox=x=0:y=${outH - botBand}:w=${outW}:h=${botBand}:color=0x000000@0.28:t=fill`;
+
+    if (introTiming) {
+      return [
+        '[0:v]setpts=PTS-STARTPTS,split=2[introsrc][mainsrc]',
+        buildIntroChain('[introsrc]'),
+        `[mainsrc]${mainBody},fps=${INTRO_FPS},setpts=PTS-STARTPTS,fade=t=in:st=0:d=0.20[main_v]`,
+        '[intro_v][main_v]concat=n=2:v=1:a=0[comp]',
+        `[comp]${assFilter}[out]`,
+      ].join(';');
+    }
+
+    return [
+      `[0:v]setpts=PTS-STARTPTS,${mainBody}[comp]`,
+      `[comp]${assFilter}[out]`,
+    ].join(';');
+  }
+
   // shorts_full_bleed (DEFAULT): Edge-to-edge Full Frame 9:16 (1080x1920 or 2160x3840 4K)
   // Smooth active-speaker auto-focus on BOTH X and Y, zero red lines, 6x faster encoding
   const verticalZoom = sourceH >= 720 ? Math.max(1.0, Math.min(1.15, avgZoom * 0.84)) : 1.0;
@@ -1564,6 +1607,9 @@ export async function renderClipMp4(params: {
     let audioArgs: string[] = [];
 
     if (hasAudioStream) {
+      const loudnormSuffix = effectiveOverlayStyle.normalizeAudio
+        ? ',loudnorm=I=-14:TP=-1.5:LRA=11'
+        : '';
       if (introTiming) {
         const introFadeOutStart = Math.max(0.2, introTiming.exactDurationSec - 0.34).toFixed(4);
         audioFilterChains.push(
@@ -1572,12 +1618,12 @@ export async function renderClipMp4(params: {
         if (emotionAudioGraph) {
           audioFilterChains.push(...emotionAudioGraph.filterChains);
           audioFilterChains.push(
-            `${emotionAudioGraph.outputLabel}aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[main_a]`,
+            `${emotionAudioGraph.outputLabel}aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo${loudnormSuffix}[main_a]`,
             '[intro_a][main_a]concat=n=2:v=0:a=1[final_a]'
           );
         } else {
           audioFilterChains.push(
-            '[0:a]asetpts=PTS-STARTPTS,aresample=44100:async=1:first_pts=0,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[main_a]',
+            `[0:a]asetpts=PTS-STARTPTS,aresample=44100:async=1:first_pts=0,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo${loudnormSuffix}[main_a]`,
             '[intro_a][main_a]concat=n=2:v=0:a=1[final_a]'
           );
         }
@@ -1585,8 +1631,23 @@ export async function renderClipMp4(params: {
         audioArgs = ['-c:a', 'aac', '-b:a', '192k'];
       } else if (emotionAudioGraph) {
         audioFilterChains.push(...emotionAudioGraph.filterChains);
-        audioMapTarget = emotionAudioGraph.outputLabel;
+        if (loudnormSuffix) {
+          audioFilterChains.push(`${emotionAudioGraph.outputLabel}loudnorm=I=-14:TP=-1.5:LRA=11[aout_norm]`);
+          audioMapTarget = '[aout_norm]';
+        } else {
+          audioMapTarget = emotionAudioGraph.outputLabel;
+        }
         audioArgs = ['-c:a', 'aac', '-b:a', '192k'];
+      } else if (loudnormSuffix) {
+        audioMapTarget = '0:a';
+        audioArgs = [
+          '-af',
+          'asetpts=PTS-STARTPTS,aresample=async=1:first_pts=0,loudnorm=I=-14:TP=-1.5:LRA=11',
+          '-c:a',
+          'aac',
+          '-b:a',
+          '192k',
+        ];
       } else {
         audioMapTarget = '0:a';
         audioArgs =
@@ -1607,7 +1668,11 @@ export async function renderClipMp4(params: {
         ? 'Full 16:9'
         : layout === 'shorts_studio_focus'
           ? 'Shorts 9:16 Studio'
-          : 'Full Frame 9:16';
+          : layout === 'square_1_1'
+            ? 'Square 1:1'
+            : layout === 'portrait_4_5'
+              ? 'Portrait 4:5'
+              : 'Full Frame 9:16';
     params.onProgress?.(
       `Merender ${layoutLabel} ${qualityLabel} (0%)...`,
       56

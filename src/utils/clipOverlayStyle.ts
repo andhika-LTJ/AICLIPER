@@ -210,6 +210,8 @@ export function normalizeClipOverlayStyle(
       DEFAULT_CLIP_OVERLAY_STYLE.subtitleHighlightColor
     ),
     subtitleBoxStyle,
+    watermarkText: cleanText(raw.watermarkText, 32),
+    normalizeAudio: Boolean(raw.normalizeAudio),
   };
 }
 
@@ -331,7 +333,9 @@ export function isCustomOverlayStyleActive(style?: Partial<ClipOverlayStyle> | n
     norm.subtitleFontScale !== DEFAULT_CLIP_OVERLAY_STYLE.subtitleFontScale ||
     norm.subtitleTextColor !== DEFAULT_CLIP_OVERLAY_STYLE.subtitleTextColor ||
     norm.subtitleHighlightColor !== DEFAULT_CLIP_OVERLAY_STYLE.subtitleHighlightColor ||
-    norm.subtitleBoxStyle !== DEFAULT_CLIP_OVERLAY_STYLE.subtitleBoxStyle
+    norm.subtitleBoxStyle !== DEFAULT_CLIP_OVERLAY_STYLE.subtitleBoxStyle ||
+    Boolean(norm.watermarkText) ||
+    Boolean(norm.normalizeAudio)
   );
 }
 

@@ -1,12 +1,18 @@
+import type { KlipCastDatabase } from './db.ts';
+
 export type RenderJobStatus = 'running' | 'completed' | 'failed' | 'cancelled';
 
 export interface ManagedRenderJob {
   jobId: string;
   clipId: string;
+  userUid: string;
+  layout: string;
+  quality: string;
   dedupeKey: string;
   status: RenderJobStatus;
   stage: string;
   progress: number;
+  retryCount: number;
   createdAt: number;
   updatedAt: number;
   abortController: AbortController;
@@ -24,19 +30,60 @@ export interface CreateOrReuseRenderJobResult {
 export class RenderJobManager {
   private readonly jobs = new Map<string, ManagedRenderJob>();
   private readonly retentionMs: number;
+  private readonly db?: KlipCastDatabase;
 
-  constructor(retentionMs = 60 * 60 * 1000) {
+  constructor(retentionMs = 60 * 60 * 1000, db?: KlipCastDatabase) {
     this.retentionMs = retentionMs;
+    this.db = db;
+  }
+
+  private persist(job: ManagedRenderJob): void {
+    if (!this.db || !job.userUid || job.userUid === 'anonymous') return;
+    try {
+      const isTerminal =
+        job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled';
+      const outputSizeBytes =
+        typeof job.result?.sizeBytes === 'number' ? job.result.sizeBytes : null;
+      this.db.upsertRenderJob({
+        jobId: job.jobId,
+        clipId: job.clipId,
+        userUid: job.userUid,
+        layout: job.layout,
+        quality: job.quality,
+        status: job.status,
+        stage: job.stage,
+        progress: job.progress,
+        retryCount: job.retryCount,
+        durationMs: isTerminal ? Math.max(0, job.updatedAt - job.createdAt) : null,
+        outputSizeBytes,
+        errorMessage: job.error ?? null,
+        errorCode: job.code ?? null,
+        resultJson: job.result
+          ? JSON.stringify({
+              videoUrl: job.result.videoUrl,
+              sizeBytes: job.result.sizeBytes,
+              width: job.result.width,
+              height: job.result.height,
+              layout: job.result.layout,
+              quality: job.result.quality,
+            })
+          : null,
+        createdAt: new Date(job.createdAt).toISOString(),
+        completedAt: isTerminal ? new Date(job.updatedAt).toISOString() : null,
+      });
+    } catch {
+      // Non-fatal persistence safeguard
+    }
   }
 
   get(jobId: string): ManagedRenderJob | undefined {
     return this.jobs.get(jobId);
   }
 
-  listActive(): ManagedRenderJob[] {
+  listActive(userUid?: string): ManagedRenderJob[] {
     const active: ManagedRenderJob[] = [];
     for (const job of this.jobs.values()) {
-      if (job.status === 'running') {
+      if (job.status === 'running' && (!userUid || job.userUid === userUid)) {
         active.push(job);
       }
     }
@@ -53,24 +100,31 @@ export class RenderJobManager {
   }
 
   /**
-   * Starts a new render job with single-slot concurrency safety:
-   * - If an identical job (same dedupeKey) is already running and `forceRestart` is false, reuses it.
-   * - Otherwise automatically cancels & aborts any other running render jobs so heavy FFmpeg processes
-   *   never pile up, saturate container CPU, or cause proxy HTTP 429 rejections.
+   * Starts a new render job with per-user isolation & single-slot concurrency safety:
+   * - If an identical job for the same user is already running and `forceRestart` is false, reuses it.
+   * - Cancels only THIS user's other running jobs (User B can never cancel User A's render!).
    */
   createOrReuse(params: {
     clipId: string;
+    userUid?: string;
+    layout?: string;
+    quality?: string;
     dedupeKey: string;
     initialStage: string;
     initialProgress?: number;
     forceRestart?: boolean;
   }): CreateOrReuseRenderJobResult {
     const now = Date.now();
+    const userUid = params.userUid ?? 'system';
     this.pruneOld(now);
 
     if (!params.forceRestart) {
       for (const existing of this.jobs.values()) {
-        if (existing.status === 'running' && existing.dedupeKey === params.dedupeKey) {
+        if (
+          existing.status === 'running' &&
+          existing.userUid === userUid &&
+          existing.dedupeKey === params.dedupeKey
+        ) {
           return { job: existing, reused: true, preemptedJobIds: [] };
         }
       }
@@ -78,7 +132,7 @@ export class RenderJobManager {
 
     const preemptedJobIds: string[] = [];
     for (const existing of this.jobs.values()) {
-      if (existing.status === 'running') {
+      if (existing.status === 'running' && existing.userUid === userUid) {
         this.markCancelled(
           existing,
           'Dibatalkan otomatis karena permintaan render baru dimulai.'
@@ -91,15 +145,20 @@ export class RenderJobManager {
     const job: ManagedRenderJob = {
       jobId,
       clipId: params.clipId,
+      userUid,
+      layout: params.layout ?? 'shorts_full_bleed',
+      quality: params.quality ?? '1080p',
       dedupeKey: params.dedupeKey,
       status: 'running',
       stage: params.initialStage,
       progress: params.initialProgress ?? 8,
+      retryCount: 0,
       createdAt: now,
       updatedAt: now,
       abortController: new AbortController(),
     };
     this.jobs.set(jobId, job);
+    this.persist(job);
 
     return { job, reused: false, preemptedJobIds };
   }
@@ -110,6 +169,7 @@ export class RenderJobManager {
     job.stage = stage;
     job.progress = progress;
     job.updatedAt = Date.now();
+    this.persist(job);
   }
 
   complete(jobId: string, result: Record<string, unknown>): boolean {
@@ -122,6 +182,7 @@ export class RenderJobManager {
     job.progress = 100;
     job.result = result;
     job.updatedAt = Date.now();
+    this.persist(job);
     return true;
   }
 
@@ -136,16 +197,25 @@ export class RenderJobManager {
     job.error = errorMessage;
     job.code = code;
     job.updatedAt = Date.now();
+    this.persist(job);
   }
 
-  cancel(jobId: string, reason = 'Proses render dibatalkan oleh pengguna.'): {
+  cancel(
+    jobId: string,
+    reason = 'Proses render dibatalkan oleh pengguna.',
+    requester?: { uid: string; isAdmin?: boolean }
+  ): {
     found: boolean;
+    forbidden?: boolean;
     wasRunning: boolean;
     job?: ManagedRenderJob;
   } {
     const job = this.jobs.get(jobId);
     if (!job) {
       return { found: false, wasRunning: false };
+    }
+    if (requester && !requester.isAdmin && job.userUid !== requester.uid) {
+      return { found: true, forbidden: true, wasRunning: job.status === 'running' };
     }
     const wasRunning = job.status === 'running';
     if (wasRunning) {
@@ -154,10 +224,13 @@ export class RenderJobManager {
     return { found: true, wasRunning, job };
   }
 
-  cancelAllRunning(reason = 'Semua antrean render aktif dibatalkan oleh pengguna.'): string[] {
+  cancelAllRunning(
+    reason = 'Semua antrean render aktif dibatalkan oleh pengguna.',
+    userUid?: string
+  ): string[] {
     const cancelledIds: string[] = [];
     for (const job of this.jobs.values()) {
-      if (job.status === 'running') {
+      if (job.status === 'running' && (!userUid || job.userUid === userUid)) {
         this.markCancelled(job, reason);
         cancelledIds.push(job.jobId);
       }
@@ -174,5 +247,6 @@ export class RenderJobManager {
     if (!job.abortController.signal.aborted) {
       job.abortController.abort(new Error(reason));
     }
+    this.persist(job);
   }
 }

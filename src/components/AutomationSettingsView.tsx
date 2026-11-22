@@ -6,9 +6,12 @@ import type {
   SocialPlatform,
 } from '../types/clipper';
 import { PLATFORM_LABELS } from '../utils/youtube';
+import { apiFetch } from '../utils/apiClient';
 
 interface AutomationSettingsViewProps {
   config: BotAutomationConfig;
+  isAuthenticated?: boolean;
+  canManageCookies?: boolean;
   onSaveConfig: (next: BotAutomationConfig) => Promise<void>;
   onResetDemo: () => Promise<void>;
 }
@@ -17,12 +20,15 @@ const ALL_PLATFORMS: SocialPlatform[] = [
   'youtube_shorts',
   'tiktok',
   'instagram_reels',
+  'facebook_reels',
   'x_twitter',
   'linkedin',
 ];
 
 export function AutomationSettingsView({
   config,
+  isAuthenticated = false,
+  canManageCookies = false,
   onSaveConfig,
   onResetDemo,
 }: AutomationSettingsViewProps) {
@@ -43,7 +49,11 @@ export function AutomationSettingsView({
   }, [config]);
 
   useEffect(() => {
-    fetch('/api/automation/cookies-status')
+    if (!isAuthenticated) {
+      setHasCookies(false);
+      return;
+    }
+    apiFetch('/api/automation/cookies-status')
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
         if (d && typeof d.hasYoutubeCookies === 'boolean') {
@@ -51,7 +61,7 @@ export function AutomationSettingsView({
         }
       })
       .catch(() => {});
-  }, []);
+  }, [isAuthenticated]);
 
   const togglePlatform = (platform: SocialPlatform) => {
     setDraft((prev) => {
@@ -79,7 +89,7 @@ export function AutomationSettingsView({
     setIsTestingWebhook(true);
     setWebhookTestResult(null);
     try {
-      const res = await fetch('/api/automation/test-webhook', {
+      const res = await apiFetch('/api/automation/test-webhook', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -295,6 +305,8 @@ export function AutomationSettingsView({
               >
                 <option value="shorts_full_bleed">Full Frame 9:16 (Auto-Fokus Natural)</option>
                 <option value="shorts_studio_focus">Shorts 9:16 Studio (Latar Blur)</option>
+                <option value="portrait_4_5">Portrait 4:5 (Instagram / Facebook Feed)</option>
+                <option value="square_1_1">Square 1:1 (Feed Persegi)</option>
                 <option value="full_16_9_focus">Video Full 16:9 (Layar Lebar)</option>
               </select>
             </div>
@@ -308,9 +320,17 @@ export function AutomationSettingsView({
                   ? draft.enableUltraHdRender
                     ? '3840 × 2160 px (4K Ultra HD 16:9)'
                     : '1920 × 1080 px (1080p Full HD 16:9)'
-                  : draft.enableUltraHdRender
-                    ? '2160 × 3840 px (4K Ultra HD 9:16)'
-                    : '1080 × 1920 px (1080p Full HD 9:16)'}
+                  : draft.defaultRenderLayout === 'square_1_1'
+                    ? draft.enableUltraHdRender
+                      ? '2160 × 2160 px (4K Square 1:1)'
+                      : '1080 × 1080 px (Full HD Square 1:1)'
+                    : draft.defaultRenderLayout === 'portrait_4_5'
+                      ? draft.enableUltraHdRender
+                        ? '2160 × 2700 px (4K Portrait 4:5)'
+                        : '1080 × 1350 px (Full HD Portrait 4:5)'
+                      : draft.enableUltraHdRender
+                        ? '2160 × 3840 px (4K Ultra HD 9:16)'
+                        : '1080 × 1920 px (1080p Full HD 9:16)'}
               </strong>
             </span>
             <span className="font-mono text-[11px] text-slate-500">
@@ -455,9 +475,18 @@ export function AutomationSettingsView({
                 onChange={(e) =>
                   setDraft((p) => ({ ...p, webhookSecretHeader: e.target.value }))
                 }
-                placeholder="Token rahasia"
+                placeholder={
+                  draft.hasWebhookSecret
+                    ? 'Secret tersimpan di server (ketik baru untuk mengganti)'
+                    : 'Token rahasia'
+                }
                 className="w-full h-10 px-3 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:border-red-600 focus:outline-none"
               />
+              {draft.hasWebhookSecret && (
+                <p className="text-[11px] text-emerald-700 mt-1">
+                  Secret webhook tersimpan aman di sisi server dan tidak pernah dikirim balik ke browser.
+                </p>
+              )}
             </div>
           </div>
 
@@ -485,72 +514,74 @@ export function AutomationSettingsView({
           </div>
         </div>
 
-        {/* Rule 5: YouTube Cookies for direct server MP4 extraction */}
-        <div className="space-y-3 pt-5 border-t border-slate-100">
-          <div className="flex flex-wrap items-center justify-between gap-2">
+        {/* Rule 5: YouTube Cookies for direct server MP4 extraction (Admin-only) */}
+        {canManageCookies && (
+          <div className="space-y-3 pt-5 border-t border-slate-100">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h2 className="font-display text-base font-bold text-slate-900">
+                  Autentikasi Unduhan Video YouTube (cookies.txt · Khusus Admin)
+                </h2>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Diperlukan jika YouTube memblokir unduhan segmen MP4 dari IP server cloud. Status:{' '}
+                  <strong className={hasCookies ? 'text-emerald-700' : 'text-slate-700'}>
+                    {hasCookies ? 'Cookies Terpasang' : 'Belum Terpasang'}
+                  </strong>
+                </p>
+              </div>
+            </div>
+
             <div>
-              <h2 className="font-display text-base font-bold text-slate-900">
-                Autentikasi Unduhan Video YouTube (cookies.txt)
-              </h2>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Diperlukan jika YouTube memblokir unduhan segmen MP4 dari IP server cloud. Status:{' '}
-                <strong className={hasCookies ? 'text-emerald-700' : 'text-slate-700'}>
-                  {hasCookies ? 'Cookies Terpasang' : 'Belum Terpasang'}
-                </strong>
-              </p>
+              <label htmlFor="cfg-cookies-txt" className="block text-xs font-semibold text-slate-700 mb-1">
+                Tempel Isi File cookies.txt (Format Netscape)
+              </label>
+              <textarea
+                id="cfg-cookies-txt"
+                rows={3}
+                value={cookiesInput}
+                onChange={(e) => setCookiesInput(e.target.value)}
+                placeholder="# Netscape HTTP Cookie File..."
+                className="w-full p-3 text-xs font-mono bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:border-red-600 focus:outline-none"
+              />
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={async () => {
+                  const res = await apiFetch('/api/automation/youtube-cookies', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ cookiesTxt: cookiesInput }),
+                  });
+                  const data = (await res.json().catch(() => ({}))) as {
+                    hasYoutubeCookies?: boolean;
+                    error?: string;
+                  };
+                  if (res.ok) {
+                    setHasCookies(Boolean(data.hasYoutubeCookies));
+                    setCookiesInput('');
+                    setCookiesStatusMsg(
+                      data.hasYoutubeCookies
+                        ? 'Cookies YouTube disimpan di server.'
+                        : 'Cookies YouTube dihapus.'
+                    );
+                  } else {
+                    setCookiesStatusMsg(data.error || 'Format cookies.txt tidak valid.');
+                  }
+                }}
+                className="px-3.5 py-2 text-xs font-semibold text-slate-800 bg-slate-100 hover:bg-slate-200 rounded-lg cursor-pointer"
+              >
+                Simpan / Hapus Cookies
+              </button>
+              {cookiesStatusMsg && (
+                <span role="status" className="text-xs font-medium text-emerald-700">
+                  {cookiesStatusMsg}
+                </span>
+              )}
             </div>
           </div>
-
-          <div>
-            <label htmlFor="cfg-cookies-txt" className="block text-xs font-semibold text-slate-700 mb-1">
-              Tempel Isi File cookies.txt (Format Netscape)
-            </label>
-            <textarea
-              id="cfg-cookies-txt"
-              rows={3}
-              value={cookiesInput}
-              onChange={(e) => setCookiesInput(e.target.value)}
-              placeholder="# Netscape HTTP Cookie File..."
-              className="w-full p-3 text-xs font-mono bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:border-red-600 focus:outline-none"
-            />
-          </div>
-
-          <div className="flex flex-wrap items-center gap-3">
-            <button
-              type="button"
-              onClick={async () => {
-                const res = await fetch('/api/automation/youtube-cookies', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ cookiesTxt: cookiesInput }),
-                });
-                const data = (await res.json().catch(() => ({}))) as {
-                  hasYoutubeCookies?: boolean;
-                  error?: string;
-                };
-                if (res.ok) {
-                  setHasCookies(Boolean(data.hasYoutubeCookies));
-                  setCookiesInput('');
-                  setCookiesStatusMsg(
-                    data.hasYoutubeCookies
-                      ? 'Cookies YouTube disimpan di server.'
-                      : 'Cookies YouTube dihapus.'
-                  );
-                } else {
-                  setCookiesStatusMsg(data.error || 'Format cookies.txt tidak valid.');
-                }
-              }}
-              className="px-3.5 py-2 text-xs font-semibold text-slate-800 bg-slate-100 hover:bg-slate-200 rounded-lg cursor-pointer"
-            >
-              Simpan / Hapus Cookies
-            </button>
-            {cookiesStatusMsg && (
-              <span role="status" className="text-xs font-medium text-emerald-700">
-                {cookiesStatusMsg}
-              </span>
-            )}
-          </div>
-        </div>
+        )}
 
         <div className="pt-4 border-t border-slate-200 flex flex-wrap items-center justify-between gap-4">
           <button

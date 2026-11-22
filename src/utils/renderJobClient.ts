@@ -4,6 +4,7 @@ import type {
   ClipRenderQuality,
   StudioStoreState,
 } from '../types/clipper';
+import { apiFetch } from './apiClient';
 
 export interface RenderJobCompletedPayload {
   videoUrl: string;
@@ -24,6 +25,7 @@ export interface RenderJobError extends Error {
 
 interface RenderJobPollResponse {
   jobId?: string;
+  streamToken?: string;
   status?: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
   stage?: string;
   progress?: number;
@@ -89,7 +91,7 @@ export async function cancelActiveServerRenders(jobId?: string | null): Promise<
     ? `/api/render-jobs/${encodeURIComponent(jobId)}/cancel`
     : '/api/render-jobs/cancel-active';
   try {
-    await fetch(endpoint, {
+    await apiFetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       keepalive: true,
@@ -126,11 +128,12 @@ type SseStreamOutcome =
 
 function listenViaEventSource(params: {
   jobId: string;
+  streamToken?: string;
   signal?: AbortSignal;
   onUpdate: (stage?: string, progress?: number) => void;
 }): Promise<SseStreamOutcome> {
-  const { jobId, signal, onUpdate } = params;
-  if (typeof EventSource === 'undefined') {
+  const { jobId, streamToken, signal, onUpdate } = params;
+  if (typeof EventSource === 'undefined' || !streamToken) {
     return Promise.resolve({ kind: 'fallback' });
   }
 
@@ -141,7 +144,9 @@ function listenViaEventSource(params: {
     }
 
     let settled = false;
-    const es = new EventSource(`/api/render-jobs/${encodeURIComponent(jobId)}/events`);
+    const es = new EventSource(
+      `/api/render-jobs/${encodeURIComponent(jobId)}/events?st=${encodeURIComponent(streamToken)}`
+    );
 
     const finish = (outcome: SseStreamOutcome) => {
       if (settled) return;
@@ -194,7 +199,7 @@ async function tryRecoverCompletedClipFromState(
   previousRenderedUrl?: string
 ): Promise<RenderJobCompletedPayload | null> {
   try {
-    const res = await fetch('/api/state', { cache: 'no-store' });
+    const res = await apiFetch('/api/state', { cache: 'no-store' });
     if (!res.ok) return null;
     const store = (await res.json()) as StudioStoreState;
     const clip = store.clips.find((c) => c.id === clipId);
@@ -283,7 +288,7 @@ export async function runRenderClipJob(params: {
         throw makeRenderError('Proses render dibatalkan oleh pengguna.', 'CANCELLED');
       }
       try {
-        startRes = await fetch('/api/render', {
+        startRes = await apiFetch('/api/render', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -349,6 +354,7 @@ export async function runRenderClipJob(params: {
     }
 
     const jobId = startData?.jobId;
+    const streamToken = startData?.streamToken;
     if (!jobId) {
       throw makeRenderError('Server tidak mengembalikan ID antrean render.');
     }
@@ -375,10 +381,11 @@ export async function runRenderClipJob(params: {
         throw makeRenderError('Proses render dibatalkan oleh pengguna.', 'CANCELLED');
       }
 
-      if (consecutiveSseFastFailures < 3) {
+      if (consecutiveSseFastFailures < 3 && streamToken) {
         const sseOpenedAt = Date.now();
         const outcome = await listenViaEventSource({
           jobId,
+          streamToken,
           signal,
           onUpdate: (stage, progress) => {
             if (stage) latestStage = stage;
@@ -426,7 +433,7 @@ export async function runRenderClipJob(params: {
 
       let pollRes: Response;
       try {
-        pollRes = await fetch(`/api/render-jobs/${encodeURIComponent(jobId)}`, {
+        pollRes = await apiFetch(`/api/render-jobs/${encodeURIComponent(jobId)}`, {
           cache: 'no-store',
           signal,
         });

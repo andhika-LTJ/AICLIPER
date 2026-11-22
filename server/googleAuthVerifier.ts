@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
+import firebaseAppletConfig from '../firebase-applet-config.json' with { type: 'json' };
 
 const GOOGLE_SECURETOKEN_CERTS_URL =
   'https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com';
@@ -211,6 +212,10 @@ export function verifyFirebaseGoogleIdTokenWithCerts(params: {
 }
 
 function loadConfiguredProjectId(): string {
+  const fromEnv = process.env.FIREBASE_PROJECT_ID?.trim();
+  if (fromEnv) return fromEnv;
+  const fromImport = (firebaseAppletConfig as { projectId?: string })?.projectId?.trim();
+  if (fromImport) return fromImport;
   const configPath = path.resolve(process.cwd(), 'firebase-applet-config.json');
   const raw = fs.readFileSync(configPath, 'utf-8');
   const parsed = JSON.parse(raw) as { projectId?: string };

@@ -308,6 +308,12 @@ export function ClipOverlayEditorModal({
                       </p>
                     </div>
                   )}
+
+                  {draft.watermarkText && draft.watermarkText.trim() && (
+                    <div className="absolute right-2.5 bottom-7 px-1.5 py-0.5 rounded bg-slate-950/60 text-[7px] font-semibold tracking-wider text-white/85">
+                      {draft.watermarkText.trim()}
+                    </div>
+                  )}
                 </>
               )}
             </div>
@@ -484,6 +490,27 @@ export function ClipOverlayEditorModal({
                   </div>
                 </div>
 
+                <div>
+                  <label
+                    htmlFor="editor-watermark-text"
+                    className="block text-xs font-semibold text-slate-700 mb-1"
+                  >
+                    Watermark Kanal / Brand (Opsional, pojok kanan bawah)
+                  </label>
+                  <input
+                    id="editor-watermark-text"
+                    type="text"
+                    maxLength={40}
+                    value={draft.watermarkText ?? ''}
+                    onChange={(e) => {
+                      setPreviewFrame('subtitle');
+                      setDraft((p) => ({ ...p, watermarkText: e.target.value }));
+                    }}
+                    placeholder="@nama_kanal_anda"
+                    className="w-full h-9 px-3 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:border-red-600 focus:outline-none"
+                  />
+                </div>
+
                 <div className="flex flex-wrap gap-4 pt-1">
                   <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-700 cursor-pointer">
                     <input
@@ -508,6 +535,17 @@ export function ClipOverlayEditorModal({
                       className="w-4 h-4 accent-red-600 rounded"
                     />
                     <span>Tampilkan caption ringkas bawah</span>
+                  </label>
+                  <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-700 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(draft.normalizeAudio)}
+                      onChange={(e) =>
+                        setDraft((p) => ({ ...p, normalizeAudio: e.target.checked }))
+                      }
+                      className="w-4 h-4 accent-red-600 rounded"
+                    />
+                    <span>Normalisasi Audio Studio (-14 LUFS)</span>
                   </label>
                 </div>
               </div>

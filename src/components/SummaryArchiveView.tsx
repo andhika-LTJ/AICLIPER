@@ -136,23 +136,63 @@ export function SummaryArchiveView({
                   </button>
                 </div>
 
-                <p className="text-sm leading-relaxed text-slate-700 max-w-4xl">
+                <p className="text-sm leading-relaxed text-slate-700 dark:text-slate-300 max-w-4xl">
                   {ep.episodeSummary}
                 </p>
 
-                <div className="divide-y divide-slate-100">
+                {((ep.chapters && ep.chapters.length > 0) || (ep.keyQuotes && ep.keyQuotes.length > 0)) && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
+                    {ep.chapters && ep.chapters.length > 0 && (
+                      <div className="p-3.5 rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-2">
+                        <h3 className="text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">
+                          Bab & Timestamp Episode
+                        </h3>
+                        <ul className="space-y-1.5 text-xs">
+                          {ep.chapters.map((ch, idx) => (
+                            <li key={`${ch.timeSec}-${idx}`} className="flex items-start gap-2">
+                              <span className="font-mono tabular-nums text-red-600 font-semibold shrink-0">
+                                {formatTimestamp(ch.timeSec)}
+                              </span>
+                              <span className="text-slate-800 dark:text-slate-200">
+                                <strong className="font-semibold">{ch.title}</strong>
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {ep.keyQuotes && ep.keyQuotes.length > 0 && (
+                      <div className="p-3.5 rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-2">
+                        <h3 className="text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">
+                          Kutipan Penting
+                        </h3>
+                        <ul className="space-y-1.5 text-xs italic text-slate-700 dark:text-slate-300">
+                          {ep.keyQuotes.map((quote, idx) => (
+                            <li key={idx}>“{quote}”</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <div className="divide-y divide-slate-100 dark:divide-slate-800">
                   {epClips.map((c, idx) => (
                     <div
                       key={c.id}
                       className="py-3.5 first:pt-0 last:pb-0 flex flex-col sm:flex-row sm:items-start justify-between gap-4"
                     >
                       <div className="space-y-1 max-w-3xl">
-                        <div className="text-xs font-mono tabular-nums text-slate-500">
+                        <div className="text-xs font-mono tabular-nums text-slate-500 dark:text-slate-400">
                           {String(idx + 1).padStart(2, '0')} · {formatTimestamp(c.startSec)} –{' '}
                           {formatTimestamp(c.endSec)}
                         </div>
-                        <h3 className="text-sm font-semibold text-slate-900">{c.title}</h3>
-                        <p className="text-xs leading-relaxed text-slate-600">{c.ringkasanTeks}</p>
+                        <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
+                          {c.title}
+                        </h3>
+                        <p className="text-xs leading-relaxed text-slate-600 dark:text-slate-400">
+                          {c.ringkasanTeks}
+                        </p>
                       </div>
                       <button
                         type="button"

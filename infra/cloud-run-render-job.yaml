@@ -1,0 +1,35 @@
+apiVersion: run.googleapis.com/v1
+kind: Job
+metadata:
+  name: aicliper-render-worker
+  labels:
+    app: aicliper
+    component: render-worker
+spec:
+  template:
+    spec:
+      parallelism: 1
+      taskCount: 1
+      template:
+        spec:
+          maxRetries: 2
+          timeoutSeconds: 1800
+          containers:
+            - image: gcr.io/PROJECT_ID/aicliper-render-worker:latest
+              resources:
+                limits:
+                  cpu: "4"
+                  memory: "8Gi"
+              env:
+                - name: NODE_ENV
+                  value: "production"
+                - name: RENDER_DEFAULT_PROFILE
+                  value: "balanced_1080p"
+                - name: GCS_BUCKET_NAME
+                  value: "REPLACE_WITH_GCS_BUCKET"
+                - name: SQL_HOST
+                  value: "REPLACE_WITH_CLOUD_SQL_HOST"
+                - name: SQL_DB_NAME
+                  value: "aicliper"
+                - name: SQL_USER
+                  value: "aicliper_app"

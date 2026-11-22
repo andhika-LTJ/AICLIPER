@@ -41,13 +41,17 @@ export interface SpeakerKeyframe {
 export type CanonicalStudioLayout =
   | 'full_16_9_focus'
   | 'shorts_studio_focus'
-  | 'shorts_full_bleed';
+  | 'shorts_full_bleed'
+  | 'square_1_1'
+  | 'portrait_4_5';
 
 export type CanonicalRenderQuality = '1080p' | '4k';
 
 export function normalizeRenderLayout(layout?: ClipRenderLayout): CanonicalStudioLayout {
   if (layout === 'full_16_9_focus' || layout === 'landscape_16_9') return 'full_16_9_focus';
   if (layout === 'shorts_studio_focus' || layout === 'vertical_9_16') return 'shorts_studio_focus';
+  if (layout === 'square_1_1') return 'square_1_1';
+  if (layout === 'portrait_4_5') return 'portrait_4_5';
   return 'shorts_full_bleed';
 }
 
@@ -86,9 +90,14 @@ export function getTargetCanvasDimensions(
   layout: CanonicalStudioLayout,
   quality: CanonicalRenderQuality
 ): { outW: number; outH: number } {
-  const isLandscape = layout === 'full_16_9_focus';
-  if (isLandscape) {
+  if (layout === 'full_16_9_focus') {
     return quality === '4k' ? { outW: 3840, outH: 2160 } : { outW: 1920, outH: 1080 };
+  }
+  if (layout === 'square_1_1') {
+    return quality === '4k' ? { outW: 2160, outH: 2160 } : { outW: 1080, outH: 1080 };
+  }
+  if (layout === 'portrait_4_5') {
+    return quality === '4k' ? { outW: 2160, outH: 2700 } : { outW: 1080, outH: 1350 };
   }
   return quality === '4k' ? { outW: 2160, outH: 3840 } : { outW: 1080, outH: 1920 };
 }
@@ -548,7 +557,14 @@ export function generateStudioAssScript(params: {
 
   const isLandscape = layout === 'full_16_9_focus';
   const playResX = isLandscape ? 1920 : 1080;
-  const playResY = isLandscape ? 1080 : 1920;
+  const playResY =
+    layout === 'full_16_9_focus'
+      ? 1080
+      : layout === 'square_1_1'
+        ? 1080
+        : layout === 'portrait_4_5'
+          ? 1350
+          : 1920;
 
   const cleanChannel = escapeAssText(channelName || 'Podcast').slice(0, 28).toUpperCase();
   const effectiveTitle = normStyle.customTopTitle || title;
@@ -626,7 +642,8 @@ Style: ChannelTag,${effectiveFontName},${isLandscape ? 22 : 24},&H00E2E8F0,&H000
 Style: TitleCard,${effectiveFontName},${titleFontSize},&H00FFFFFF,&H000000FF,&H00090D16,&HAA090D16,1,0,0,0,100,100,0,0,1,3.5,2,${topAlign},${titleMarginL},${titleMarginR},${titleMarginV},1
 Style: EmotionCallout,${effectiveFontName},${isLandscape ? 36 : 40},&H0024D4FF,&H000000FF,&H00090D16,&HAA090D16,1,0,0,0,100,100,1.4,0,1,4.2,2.2,5,${isLandscape ? 44 : 64},${isLandscape ? 44 : 64},48,1
 Style: SubtitleBox,${effectiveFontName},${subFontSize},${subPrimaryColor},&H0000D7FF,${subBoxConfig.outlineColor},${subBoxConfig.backColor},1,0,0,0,100,100,0,0,${subBoxConfig.borderStyle},${subBoxConfig.outline},${subBoxConfig.shadow},${subAlign},${sideMargin},${sideMargin},${subMarginV},1
-Style: HookFooter,${effectiveFontName},${isLandscape ? 24 : 25},&H00E2E8F0,&H000000FF,&H00090D16,&H99090D16,0,0,0,0,100,100,0,0,1,2.2,1.5,${subAlign},${isLandscape ? 60 : 72},${isLandscape ? 60 : 72},${isLandscape ? 24 : 118},1${introStyles}`;
+Style: HookFooter,${effectiveFontName},${isLandscape ? 24 : 25},&H00E2E8F0,&H000000FF,&H00090D16,&H99090D16,0,0,0,0,100,100,0,0,1,2.2,1.5,${subAlign},${isLandscape ? 60 : 72},${isLandscape ? 60 : 72},${isLandscape ? 24 : 118},1
+Style: WatermarkTag,${effectiveFontName},22,&H66FFFFFF,&H000000FF,&H88090D16,&H00000000,1,0,0,0,100,100,0.8,0,1,1.6,0,3,36,36,28,1${introStyles}`;
 
   const events: string[] = [];
 
@@ -653,6 +670,13 @@ Style: HookFooter,${effectiveFontName},${isLandscape ? 24 : 25},&H00E2E8F0,&H000
 
   if (normStyle.showHookFooter && footerLine) {
     events.push(`Dialogue: 1,${mainStartTs},${endTs},HookFooter,,0,0,0,,${footerLine}`);
+  }
+
+  if (normStyle.watermarkText) {
+    const cleanWm = escapeAssText(normStyle.watermarkText).slice(0, 32);
+    if (cleanWm) {
+      events.push(`Dialogue: 1,${mainStartTs},${endTs},WatermarkTag,,0,0,0,,${cleanWm}`);
+    }
   }
 
   const activeEmotions = enableEmotionEffects ? emotionMoments : [];

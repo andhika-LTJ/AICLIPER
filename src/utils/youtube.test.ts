@@ -48,6 +48,11 @@ const sampleClip: PodcastClip = {
       caption: 'Simpan klip ini buat referensi konten.',
       hashtags: ['#reels', '#podcastclips'],
     },
+    facebook_reels: {
+      title: 'Insight Kreator Reels',
+      caption: 'Simpan dan bagikan klip podcast ini.',
+      hashtags: ['#FacebookReels', '#PodcastIndonesia'],
+    },
     x_twitter: {
       title: 'Thread singkat dari podcast hari ini',
       caption: 'Audiens bukan tidak sabar, tapi selektif.',

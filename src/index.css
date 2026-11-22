@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
 
 @theme {
   --font-display: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
@@ -6,11 +7,54 @@
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
 }
 
+:root,
+html[data-theme="minimal_light"] {
+  --surface-canvas: #f8fafc;
+  --surface-card: #ffffff;
+  --surface-muted: #f1f5f9;
+  --border-subtle: #e2e8f0;
+  --accent-primary: #dc2626;
+  --accent-primary-hover: #b91c1c;
+}
+
+html[data-theme="professional"] {
+  --surface-canvas: #f4f6f9;
+  --surface-card: #ffffff;
+  --surface-muted: #e9eef5;
+  --border-subtle: #cbd5e1;
+  --accent-primary: #1d4ed8;
+  --accent-primary-hover: #1e40af;
+}
+
+html[data-theme="dark_studio"] {
+  --surface-canvas: #020617;
+  --surface-card: #0f172a;
+  --surface-muted: #1e293b;
+  --border-subtle: #1e293b;
+  --accent-primary: #ef4444;
+  --accent-primary-hover: #dc2626;
+}
+
+html[data-theme="creator_neon"] {
+  --surface-canvas: #090614;
+  --surface-card: #130d24;
+  --surface-muted: #1d1536;
+  --border-subtle: #2e2252;
+  --accent-primary: #a855f7;
+  --accent-primary-hover: #9333ea;
+}
+
 @layer base {
   html {
     font-family: var(--font-sans);
     color: #0f172a;
-    background-color: #f8fafc;
+    background-color: var(--surface-canvas);
+  }
+
+  html.dark {
+    color: #f1f5f9;
+    background-color: var(--surface-canvas);
+    color-scheme: dark;
   }
 
   h1, h2, h3, h4, .font-display {
@@ -20,6 +64,25 @@
   .tabular-nums {
     font-variant-numeric: tabular-nums;
   }
+}
+
+html[data-theme="creator_neon"] body,
+html[data-theme="creator_neon"] .app-shell {
+  background-color: #090614;
+}
+
+html[data-theme="creator_neon"] header {
+  background-color: rgba(19, 13, 36, 0.94);
+  border-color: #2e2252;
+}
+
+html[data-theme="professional"] body,
+html[data-theme="professional"] .app-shell {
+  background-color: #f4f6f9;
+}
+
+html[data-theme="professional"] header {
+  border-color: #cbd5e1;
 }
 
 .studio-transition {

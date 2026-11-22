@@ -16,6 +16,7 @@ import {
   generateSrtFromClip,
   normalizeAutomationDurationBounds,
 } from '../src/utils/youtube.ts';
+import { validateSafeExternalUrl } from './security.ts';
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 const RENDERS_DIR = path.join(DATA_DIR, 'renders');
@@ -130,19 +131,20 @@ export async function dispatchWebhookIfConfigured(
     return { attempted: false, delivered: false };
   }
 
-  let parsedUrl: URL;
-  try {
-    parsedUrl = new URL(url);
-    if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
-      return { attempted: true, delivered: false, error: 'Protokol webhook harus HTTP/HTTPS.' };
-    }
-  } catch {
-    return { attempted: true, delivered: false, error: 'Format URL webhook tidak valid.' };
+  const validation = await validateSafeExternalUrl(url, {
+    allowedDomainsEnv: process.env.WEBHOOK_ALLOWED_DOMAINS,
+  });
+  if (!validation.valid || !validation.normalizedUrl) {
+    return {
+      attempted: true,
+      delivered: false,
+      error: validation.reason ?? 'URL webhook diblokir demi keamanan.',
+    };
   }
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-    'User-Agent': 'KlipCast-Bot/1.0',
+    'User-Agent': 'KlipCast-Bot/2.0',
   };
   if (config.webhookSecretHeader.trim()) {
     headers['X-KlipCast-Secret'] = config.webhookSecretHeader.trim();
@@ -194,12 +196,21 @@ export async function dispatchWebhookIfConfigured(
         };
 
   try {
-    const res = await fetch(parsedUrl.toString(), {
+    const res = await fetch(validation.normalizedUrl, {
       method: 'POST',
       headers,
       body: JSON.stringify(body),
+      redirect: 'manual',
       signal: AbortSignal.timeout(6000),
     });
+    if (res.status >= 300 && res.status < 400) {
+      return {
+        attempted: true,
+        delivered: false,
+        statusCode: res.status,
+        error: 'Redirect HTTP pada endpoint webhook diblokir demi keamanan (anti-SSRF).',
+      };
+    }
     return {
       attempted: true,
       delivered: res.ok,
