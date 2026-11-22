@@ -10,6 +10,7 @@ import {
   formatGeminiErrorMessage,
   generateAssFromClip,
   buildYtDlpFfmpegCommand,
+  normalizeAutomationDurationBounds,
 } from './youtube';
 import type { PodcastClip } from '../types/clipper';
 
@@ -93,6 +94,35 @@ test('clampClipRange enforces minimum, maximum, and episode duration boundaries'
   const clampedEnd = clampClipRange(595, 620, 600, 10, 60);
   assert.equal(clampedEnd.startSec, 590);
   assert.equal(clampedEnd.endSec, 600);
+
+  // Supports full 3-minute YouTube Shorts by default and enforces configured minDurationSec (no 15s snap!)
+  const expandedMin = clampClipRange(120, 135, 1800, 45, 90);
+  assert.equal(expandedMin.startSec, 120);
+  assert.equal(expandedMin.endSec, 165);
+  assert.equal(expandedMin.durationSec, 45);
+
+  const longShorts = clampClipRange(100, 250, 1800);
+  assert.equal(longShorts.durationSec, 150);
+  assert.equal(longShorts.endSec, 250);
+
+  const cappedAt180 = clampClipRange(100, 340, 1800);
+  assert.equal(cappedAt180.durationSec, 180);
+  assert.equal(cappedAt180.endSec, 280);
+});
+
+test('normalizeAutomationDurationBounds enforces detailed storytelling bounds up to 180s', () => {
+  assert.deepEqual(normalizeAutomationDurationBounds(undefined, undefined), {
+    minClipSec: 45,
+    maxClipSec: 90,
+  });
+  assert.deepEqual(normalizeAutomationDurationBounds(10, 15), {
+    minClipSec: 20,
+    maxClipSec: 30,
+  });
+  assert.deepEqual(normalizeAutomationDurationBounds(60, 240), {
+    minClipSec: 60,
+    maxClipSec: 180,
+  });
 });
 
 test('generateSrtFromClip produces valid sequential SRT cues', () => {

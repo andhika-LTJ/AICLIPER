@@ -667,12 +667,14 @@ export async function resolveThirdPartyMp4Stream(params: {
   endSec?: number;
   preferredQuality?: '1080p' | '4k';
   skipCache?: boolean;
+  skipPreTrim?: boolean;
   signal?: AbortSignal;
 }): Promise<ResolvedThirdPartyStream> {
   throwIfAborted(params.signal);
   const key = getCacheKey(params.videoId || params.sourceUrl);
   const canonicalUrl = buildCanonicalWatchUrl(params.videoId || params.sourceUrl);
   const hasTrim =
+    !params.skipPreTrim &&
     typeof params.startSec === 'number' &&
     typeof params.endSec === 'number' &&
     params.endSec > params.startSec;
@@ -757,10 +759,24 @@ export async function resolveThirdPartyMp4Stream(params: {
         runDelayedRaceBranch(1_500, sig, () => resolveViaNotube(canonicalUrl, 'mp4hd', 18_000, sig)),
         runDelayedRaceBranch(9_000, sig, () => resolveViaNotube(canonicalUrl, 'mp4', 15_000, sig)),
         runDelayedRaceBranch(9_000, sig, () =>
-          resolveViaAmp4(canonicalUrl, '480p', params.startSec, params.endSec, 15_000, sig)
+          resolveViaAmp4(
+            canonicalUrl,
+            '480p',
+            hasTrim ? params.startSec : undefined,
+            hasTrim ? params.endSec : undefined,
+            15_000,
+            sig
+          )
         ),
         runDelayedRaceBranch(10_000, sig, () =>
-          resolveViaAmp4(canonicalUrl, '360p', params.startSec, params.endSec, 15_000, sig)
+          resolveViaAmp4(
+            canonicalUrl,
+            '360p',
+            hasTrim ? params.startSec : undefined,
+            hasTrim ? params.endSec : undefined,
+            15_000,
+            sig
+          )
         )
       );
 

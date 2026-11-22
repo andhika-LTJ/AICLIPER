@@ -1,14 +1,27 @@
 import type {
   CaptionCue,
+  ClipOverlayStyle,
   ClipRenderLayout,
   ClipRenderQuality,
   EmotionMoment,
 } from '../src/types/clipper.ts';
 import {
+  DEFAULT_CLIP_OVERLAY_STYLE,
+  hexToAssColor,
+  normalizeClipOverlayStyle,
+  resolveAssFontName,
+} from '../src/utils/clipOverlayStyle.ts';
+import {
   buildEmotionAssEvents,
   findActiveEmotionAtTime,
   getEmotionTheme,
 } from './emotionEffects.ts';
+import {
+  buildIntroAssEvents,
+  buildIntroAssStyleBlock,
+  synthesizeFallbackCaptionCues,
+  type AiClipIntro,
+} from './videoIntroMath.ts';
 
 export interface SpeakerKeyframe {
   timeSec: number;
@@ -456,8 +469,9 @@ function escapeAssText(text: string): string {
  */
 function styleSubtitleLineAss(
   text: string,
-  accentColor = '&H0038BDF8&',
-  enableKineticBounce = true
+  accentColor = '&H0015CCFA&',
+  enableKineticBounce = true,
+  baseTextColor = '&H00FFFFFF&'
 ): string {
   const clean = escapeAssText(text);
   const words = clean.split(' ').filter(Boolean);
@@ -483,7 +497,7 @@ function styleSubtitleLineAss(
 
   const highlighted = words
     .map((w, idx) =>
-      idx === bestIdx ? `{\\c${accentColor}}${w}{\\c&H00FFFFFF&}` : w
+      idx === bestIdx ? `{\\c${accentColor}}${w}{\\c${baseTextColor}}` : w
     )
     .join(' ');
   return `${bouncePrefix}${highlighted}`;
@@ -491,7 +505,9 @@ function styleSubtitleLineAss(
 
 /**
  * Generates a studio-grade ASS subtitle + title + channel badge + caption footer
- * + kinetic AI Emotion Callout script (zero red borders).
+ * + optional cinematic AI Video Intro Title Card + kinetic AI Emotion Callout script.
+ * Honors full manual ClipOverlayStyle overrides (bundled font family, Y placement, alignment,
+ * font scale, text/highlight colors, subtitle box style, and visibility toggles).
  */
 export function generateStudioAssScript(params: {
   layout: CanonicalStudioLayout;
@@ -502,6 +518,10 @@ export function generateStudioAssScript(params: {
   durationSec: number;
   emotionMoments?: EmotionMoment[];
   enableEmotionEffects?: boolean;
+  intro?: AiClipIntro | null;
+  enableAiIntro?: boolean;
+  fontName?: string;
+  overlayStyle?: Partial<ClipOverlayStyle> | null;
 }): string {
   const {
     layout,
@@ -512,71 +532,154 @@ export function generateStudioAssScript(params: {
     durationSec,
     emotionMoments = [],
     enableEmotionEffects = true,
+    intro = null,
+    enableAiIntro = false,
+    fontName = 'Liberation Sans',
+    overlayStyle = null,
   } = params;
   const safeDur = Math.max(3, durationSec);
-  const endTs = formatAssTime(safeDur);
+  const normStyle = normalizeClipOverlayStyle(overlayStyle);
+  const effectiveFontName = overlayStyle
+    ? resolveAssFontName(normStyle.fontFamily)
+    : fontName;
+  const introOffsetSec = enableAiIntro && intro ? Math.max(0, intro.durationSec) : 0;
+  const mainStartTs = formatAssTime(introOffsetSec);
+  const endTs = formatAssTime(introOffsetSec + safeDur);
 
   const isLandscape = layout === 'full_16_9_focus';
   const playResX = isLandscape ? 1920 : 1080;
   const playResY = isLandscape ? 1080 : 1920;
 
   const cleanChannel = escapeAssText(channelName || 'Podcast').slice(0, 28).toUpperCase();
+  const effectiveTitle = normStyle.customTopTitle || title;
   const titleLines = wrapTitleLines(
-    escapeAssText(title),
+    escapeAssText(effectiveTitle),
     isLandscape ? 52 : 28,
     2
   ).join('\\N');
   const footerLine = wrapTitleLines(escapeAssText(hookCaption), isLandscape ? 96 : 44, 1)[0] ?? '';
 
-  const styles = isLandscape
-    ? `[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: ChannelTag,DejaVu Sans,22,&H00E2E8F0,&H000000FF,&H00090D16,&HAA090D16,1,0,0,0,100,100,0.8,0,1,2,1,7,44,44,28,1
-Style: TitleCard,DejaVu Sans,34,&H00FFFFFF,&H000000FF,&H00090D16,&HDD090D16,1,0,0,0,100,100,0,0,1,3,1.5,9,480,44,20,1
-Style: EmotionCallout,DejaVu Sans,36,&H0024D4FF,&H000000FF,&H00090D16,&HBB090D16,1,0,0,0,100,100,1.2,0,1,4,2,5,44,44,24,1
-Style: SubtitleBox,DejaVu Sans,48,&H00FFFFFF,&H0000D7FF,&H00090D16,&HBB090D16,1,0,0,0,100,100,0,0,1,4.2,2,2,180,180,108,1
-Style: HookFooter,DejaVu Sans,24,&H00CBD5E1,&H000000FF,&H00090D16,&HAA090D16,0,0,0,0,100,100,0,0,1,2.2,1,2,60,60,24,1`
-    : layout === 'shorts_studio_focus'
-      ? `[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: ChannelTag,DejaVu Sans,24,&H00E2E8F0,&H000000FF,&H00090D16,&HAA090D16,1,0,0,0,100,100,1.0,0,1,2.2,1.5,8,64,64,86,1
-Style: TitleCard,DejaVu Sans,48,&H00FFFFFF,&H000000FF,&H00090D16,&HBB090D16,1,0,0,0,100,100,0,0,1,3.5,2,8,64,64,148,1
-Style: EmotionCallout,DejaVu Sans,40,&H0024D4FF,&H000000FF,&H00090D16,&HBB090D16,1,0,0,0,100,100,1.4,0,1,4.2,2.2,5,64,64,48,1
-Style: SubtitleBox,DejaVu Sans,54,&H00FFFFFF,&H0000D7FF,&H00090D16,&HBB090D16,1,0,0,0,100,100,0,0,1,4.5,2.5,2,68,68,285,1
-Style: HookFooter,DejaVu Sans,25,&H00CBD5E1,&H000000FF,&H00090D16,&HAA090D16,0,0,0,0,100,100,0,0,1,2.2,1.5,2,68,68,128,1`
-      : `[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: ChannelTag,DejaVu Sans,24,&H00E2E8F0,&H000000FF,&H00090D16,&H99090D16,1,0,0,0,100,100,1.0,0,1,2.2,1.5,8,64,64,72,1
-Style: TitleCard,DejaVu Sans,46,&H00FFFFFF,&H000000FF,&H00090D16,&HAA090D16,1,0,0,0,100,100,0,0,1,3.5,2,8,64,64,126,1
-Style: EmotionCallout,DejaVu Sans,40,&H0024D4FF,&H000000FF,&H00090D16,&HAA090D16,1,0,0,0,100,100,1.4,0,1,4.2,2.2,5,64,64,48,1
-Style: SubtitleBox,DejaVu Sans,54,&H00FFFFFF,&H0000D7FF,&H00090D16,&HAA090D16,1,0,0,0,100,100,0,0,1,4.5,2.5,2,72,72,272,1
-Style: HookFooter,DejaVu Sans,25,&H00E2E8F0,&H000000FF,&H00090D16,&H99090D16,0,0,0,0,100,100,0,0,1,2.2,1.5,2,72,72,118,1`;
+  const introStyles =
+    introOffsetSec > 0
+      ? `\n${buildIntroAssStyleBlock(layout, effectiveFontName, normStyle)}`
+      : '';
 
-  const events: string[] = [
-    `Dialogue: 1,0:00:00.00,${endTs},ChannelTag,,0,0,0,,${cleanChannel} · PODCAST CLIP`,
-  ];
+  // Alignment codes in ASS: bottom (1=left, 2=center, 3=right), top (7=left, 8=center, 9=right)
+  const subAlign = normStyle.textAlign === 'left' ? 1 : normStyle.textAlign === 'right' ? 3 : 2;
+  const topAlign =
+    normStyle.textAlign === 'left'
+      ? 7
+      : normStyle.textAlign === 'right'
+        ? 9
+        : isLandscape
+          ? 9
+          : 8;
+  const channelAlign =
+    normStyle.textAlign === 'left'
+      ? 7
+      : normStyle.textAlign === 'right'
+        ? 9
+        : isLandscape
+          ? 7
+          : 8;
 
-  if (titleLines) {
-    events.push(`Dialogue: 1,0:00:00.00,${endTs},TitleCard,,0,0,0,,${titleLines}`);
+  // Vertical margins computed directly from user percentage sliders (15..90% subtitle, 4..28% title)
+  const subMarginV = Math.max(
+    42,
+    Math.min(playResY - 120, Math.round(playResY * (1 - normStyle.subtitlePositionY / 100)))
+  );
+  const titleMarginV = Math.max(
+    24,
+    Math.round(playResY * (normStyle.topTitlePositionY / 100))
+  );
+  const channelMarginV = Math.max(18, titleMarginV - (isLandscape ? 26 : 52));
+
+  const subFontSize = Math.max(
+    28,
+    Math.round((isLandscape ? 50 : 56) * normStyle.subtitleFontScale)
+  );
+  const titleFontSize = Math.max(
+    24,
+    Math.round((isLandscape ? 34 : layout === 'shorts_studio_focus' ? 48 : 46) * Math.max(0.85, Math.min(1.2, normStyle.introFontScale)))
+  );
+
+  const subPrimaryColor = hexToAssColor(normStyle.subtitleTextColor);
+  const subHighlightColor = hexToAssColor(normStyle.subtitleHighlightColor);
+  const hasCustomHighlight =
+    normStyle.subtitleHighlightColor !== DEFAULT_CLIP_OVERLAY_STYLE.subtitleHighlightColor;
+
+  // Subtitle border / background box style
+  const subBoxConfig =
+    normStyle.subtitleBoxStyle === 'box'
+      ? { borderStyle: 3, outline: 12, shadow: 0, outlineColor: '&H55090D16', backColor: '&H55090D16' }
+      : normStyle.subtitleBoxStyle === 'shadow'
+        ? { borderStyle: 1, outline: 1.8, shadow: 4.5, outlineColor: '&H00090D16', backColor: '&HCC000000' }
+        : { borderStyle: 1, outline: 4.6, shadow: 2.4, outlineColor: '&H00090D16', backColor: '&HAA090D16' };
+
+  const sideMargin = isLandscape ? 160 : 72;
+  const titleMarginL = isLandscape && topAlign === 9 ? 480 : isLandscape ? 44 : 64;
+  const titleMarginR = isLandscape ? 44 : 64;
+
+  const styles = `[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: ChannelTag,${effectiveFontName},${isLandscape ? 22 : 24},&H00E2E8F0,&H000000FF,&H00090D16,&H99090D16,1,0,0,0,100,100,1.0,0,1,2.2,1.5,${channelAlign},${isLandscape ? 44 : 64},${isLandscape ? 44 : 64},${channelMarginV},1
+Style: TitleCard,${effectiveFontName},${titleFontSize},&H00FFFFFF,&H000000FF,&H00090D16,&HAA090D16,1,0,0,0,100,100,0,0,1,3.5,2,${topAlign},${titleMarginL},${titleMarginR},${titleMarginV},1
+Style: EmotionCallout,${effectiveFontName},${isLandscape ? 36 : 40},&H0024D4FF,&H000000FF,&H00090D16,&HAA090D16,1,0,0,0,100,100,1.4,0,1,4.2,2.2,5,${isLandscape ? 44 : 64},${isLandscape ? 44 : 64},48,1
+Style: SubtitleBox,${effectiveFontName},${subFontSize},${subPrimaryColor},&H0000D7FF,${subBoxConfig.outlineColor},${subBoxConfig.backColor},1,0,0,0,100,100,0,0,${subBoxConfig.borderStyle},${subBoxConfig.outline},${subBoxConfig.shadow},${subAlign},${sideMargin},${sideMargin},${subMarginV},1
+Style: HookFooter,${effectiveFontName},${isLandscape ? 24 : 25},&H00E2E8F0,&H000000FF,&H00090D16,&H99090D16,0,0,0,0,100,100,0,0,1,2.2,1.5,${subAlign},${isLandscape ? 60 : 72},${isLandscape ? 60 : 72},${isLandscape ? 24 : 118},1${introStyles}`;
+
+  const events: string[] = [];
+
+  if (introOffsetSec > 0 && intro) {
+    events.push(
+      ...buildIntroAssEvents({
+        intro,
+        channelName,
+        layout,
+        overlayStyle: normStyle,
+      })
+    );
   }
 
-  if (footerLine) {
-    events.push(`Dialogue: 1,0:00:00.00,${endTs},HookFooter,,0,0,0,,${footerLine}`);
+  if (normStyle.showTopTitle) {
+    events.push(
+      `Dialogue: 1,${mainStartTs},${endTs},ChannelTag,,0,0,0,,${cleanChannel} · PODCAST CLIP`
+    );
+
+    if (titleLines) {
+      events.push(`Dialogue: 1,${mainStartTs},${endTs},TitleCard,,0,0,0,,${titleLines}`);
+    }
+  }
+
+  if (normStyle.showHookFooter && footerLine) {
+    events.push(`Dialogue: 1,${mainStartTs},${endTs},HookFooter,,0,0,0,,${footerLine}`);
   }
 
   const activeEmotions = enableEmotionEffects ? emotionMoments : [];
-  const normalizedCues = normalizeTranscribedCues(cues, safeDur);
+  let normalizedCues = normalizeTranscribedCues(cues, safeDur);
+  if (normalizedCues.length === 0) {
+    normalizedCues = synthesizeFallbackCaptionCues(hookCaption || effectiveTitle, safeDur);
+  }
   for (const cue of normalizedCues) {
-    const start = formatAssTime(cue.offsetSec);
-    const end = formatAssTime(Math.min(safeDur, cue.offsetSec + cue.durationSec));
+    const start = formatAssTime(introOffsetSec + cue.offsetSec);
+    const end = formatAssTime(
+      introOffsetSec + Math.min(safeDur, cue.offsetSec + cue.durationSec)
+    );
     const matchingEmotion =
       activeEmotions.length > 0
         ? findActiveEmotionAtTime(activeEmotions, cue.offsetSec)
         : null;
-    const accentColor = matchingEmotion
-      ? getEmotionTheme(matchingEmotion.emotion).assPrimaryColor
-      : '&H0038BDF8&';
-    const styled = styleSubtitleLineAss(cue.text, accentColor, enableEmotionEffects);
+    const accentColor = hasCustomHighlight
+      ? subHighlightColor
+      : matchingEmotion
+        ? getEmotionTheme(matchingEmotion.emotion).assPrimaryColor
+        : subHighlightColor;
+    const styled = styleSubtitleLineAss(
+      cue.text,
+      accentColor,
+      enableEmotionEffects,
+      subPrimaryColor
+    );
     events.push(`Dialogue: 2,${start},${end},SubtitleBox,,0,0,0,,${styled}`);
   }
 
@@ -586,6 +689,7 @@ Style: HookFooter,DejaVu Sans,25,&H00E2E8F0,&H000000FF,&H00090D16,&H99090D16,0,0
         moments: activeEmotions,
         layout,
         durationSec: safeDur,
+        timeOffsetSec: introOffsetSec,
       })
     );
   }

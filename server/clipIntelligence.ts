@@ -21,10 +21,15 @@ import {
   normalizeTranscribedCues,
   type SpeakerKeyframe,
 } from './speakerFocusMath.ts';
+import {
+  normalizeAiClipIntro,
+  synthesizeFallbackCaptionCues,
+  type AiClipIntro,
+} from './videoIntroMath.ts';
 
 const execFileAsync = promisify(execFile);
 
-const INTELLIGENCE_CACHE_VERSION = 4;
+const INTELLIGENCE_CACHE_VERSION = 5;
 
 export interface ClipIntelligenceResult {
   version?: number;
@@ -38,6 +43,7 @@ export interface ClipIntelligenceResult {
   speakerFocusSummary: string;
   emotionMoments: EmotionMoment[];
   emotionSummary: string;
+  intro: AiClipIntro;
 }
 
 export interface PlannedSamplePoint {
@@ -208,7 +214,7 @@ async function extractClipAudioAndSmartFrames(params: {
 
   const audioBase64 = fs.readFileSync(audioPath).toString('base64');
   const plannedWindows = planAudioTranscriptionWindows(durationSec, 15);
-  const maxSampleFrames = durationSec <= 35 ? 10 : 12;
+  const maxSampleFrames = durationSec <= 35 ? 10 : durationSec <= 75 ? 14 : 18;
   const samplePoints = planSmartSampleTimestamps(sceneCuts, durationSec, maxSampleFrames);
 
   // Step 2: Slice 12s anchored audio windows + extract 480px video frames in parallel
@@ -397,6 +403,7 @@ async function transcribeVerbatimAndAnalyzeEmotions(params: {
   hashtags: string[];
   emotionMoments: EmotionMoment[];
   emotionSummary: string;
+  intro: AiClipIntro;
 } | null> {
   const { ai, audioBase64, audioWindows, durationSec, episode, clip, signal } = params;
 
@@ -409,7 +416,20 @@ async function transcribeVerbatimAndAnalyzeEmotions(params: {
     }))
   );
 
-  const anchoredCues = mergeAnchoredWindowCues(windowCuesList, durationSec);
+  let anchoredCues = mergeAnchoredWindowCues(windowCuesList, durationSec);
+  // Safety retry: if windowed transcription returned empty (e.g. transient timeout), retry full audio once
+  if (anchoredCues.length === 0 && !signal?.aborted) {
+    const fullCues = await transcribeSingleAudioWindow({
+      ai,
+      payload: {
+        window: { index: 0, startSec: 0, endSec: durationSec, durationSec },
+        base64: audioBase64,
+      },
+      episode,
+      signal,
+    });
+    anchoredCues = normalizeTranscribedCues(fullCues, durationSec);
+  }
   if (anchoredCues.length === 0) {
     return null;
   }
@@ -434,16 +454,20 @@ Berikut adalah transkrip verbatim yang SUDAH TERSINKRONISASI tepat dengan audio 
 ${cueTimelineText}
 
 Tugas WAJIB:
-1. Buat \`autoTitle\`: judul viral yang menarik, natural, tajam, dan relevan 100% dengan pembicaraan nyata di klip ini (**maksimal 38 karakter**, tanpa kata berulang agar tidak terpotong di layar 9:16).
+1. Buat \`autoTitle\`: judul viral yang menarik, natural, tajam, dan **100% merangkum inti pembahasan detail di seluruh durasi klip ini** (**maksimal 42 karakter**, tanpa kata berulang agar tidak terpotong di layar 9:16, dan WAJIB sesuai dengan penjelasan nyata di transkrip — jangan membuat judul yang tidak terjawab di klip).
 2. Buat \`autoCaption\`: caption & deskripsi siap unggah sesuai isi nyata klip + ajakan diskusi di komentar beserta 4–5 \`hashtags\` relevan (sertakan #Shorts).
-3. Deteksi 3 hingga 5 \`emotionMoments\` (momen emosi paling menarik/punchline/plot twist/insight penting yang membuat penonton betah menonton sampai habis!):
-   - \`timeSec\`: WAJIB mengacu pada detik tepat dari timeline transkrip di atas saat punchline/emosi terucap (jarak antar momen minimal 4.5 detik).
+3. Deteksi ${durationSec >= 75 ? '4 hingga 8' : '3 hingga 5'} \`emotionMoments\` (momen emosi paling menarik/punchline/plot twist/insight penting yang membuat penonton betah menonton sampai habis!):
+   - \`timeSec\`: WAJIB mengacu pada detik tepat dari timeline transkrip di atas saat punchline/emosi terucap (jarak antar momen minimal 4.5 detik, tersebar merata dari awal sampai akhir klip).
    - \`durationSec\`: 1.6 hingga 2.4 detik.
    - \`emotion\`: salah satu dari \`"funny"\`, \`"shock"\`, \`"hype"\`, \`"dramatic"\`, \`"warm"\`, \`"insight"\`.
    - \`badgeText\`: teks reaksi singkat 2–3 kata Bahasa Indonesia yang super engaging & natural (contoh: "NGAKAK PARAH!", "PLOT TWIST!", "RELATE BANGET", "POIN EMAS").
    - \`sfxStyle\`: efek suara paling cocok: \`"pop_spark"\` (lucu), \`"vine_boom"\` (shock/roasting telak), \`"whoosh_riser"\` (hype/naik), \`"chime_insight"\` (insight/ilmu), \`"chuckle_pop"\` (hangat), \`"heartbeat_hit"\` (dramatis/serius).
    - \`intensity\`: 0.6 sampai 1.0 sesuai kekuatan emosi suara.
-4. Buat \`emotionSummary\`: 1 kalimat ringkas Bahasa Indonesia tentang nuansa emosi & efek retensi yang dipilih AI.`;
+4. Buat \`emotionSummary\`: 1 kalimat ringkas Bahasa Indonesia tentang nuansa emosi & efek retensi yang dipilih AI.
+5. Buat **Intro Pembuka Video Otomatis** (tampil 2.8 detik di awal video agar penonton langsung paham topik sebelum pembicaraan dimulai):
+   - \`introTag\`: label tema singkat 2–3 kata HURUF KAPITAL (contoh: "TOPIK UTAMA", "CERITA NYATA", "FAKTA MENGEJUTKAN", "INSIGHT BISNIS", "DEBATE SERU").
+   - \`introHeadline\`: judul pembuka utama yang padat & langsung menjelaskan isi video (maksimal 54 karakter, Bahasa Indonesia natural).
+   - \`introTeaser\`: 1 kalimat pengantar berisi (maksimal 110 karakter) yang menjelaskan konteks apa/siapa yang sedang dibahas di klip ini sehingga video terasa lengkap dan tidak langsung memotong ke tengah obrolan.`;
 
   const schema = {
     type: Type.OBJECT,
@@ -452,6 +476,9 @@ Tugas WAJIB:
       autoCaption: { type: Type.STRING },
       hashtags: { type: Type.ARRAY, items: { type: Type.STRING } },
       emotionSummary: { type: Type.STRING },
+      introTag: { type: Type.STRING },
+      introHeadline: { type: Type.STRING },
+      introTeaser: { type: Type.STRING },
       emotionMoments: {
         type: Type.ARRAY,
         items: {
@@ -481,8 +508,24 @@ Tugas WAJIB:
         },
       },
     },
-    required: ['autoTitle', 'autoCaption', 'hashtags', 'emotionSummary', 'emotionMoments'],
+    required: [
+      'autoTitle',
+      'autoCaption',
+      'hashtags',
+      'emotionSummary',
+      'introTag',
+      'introHeadline',
+      'introTeaser',
+      'emotionMoments',
+    ],
   };
+
+  const fallbackIntro = normalizeAiClipIntro(null, {
+    title: clip.autoGeneratedTitle || clip.title,
+    ringkasanTeks: clip.ringkasanTeks,
+    hookLine: clip.hookLine,
+    episodeTitle: episode.title,
+  });
 
   for (const model of ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'] as const) {
     if (signal?.aborted) break;
@@ -506,6 +549,9 @@ Tugas WAJIB:
         autoCaption?: string;
         hashtags?: string[];
         emotionSummary?: string;
+        introTag?: string;
+        introHeadline?: string;
+        introTeaser?: string;
         emotionMoments?: Partial<EmotionMoment>[];
       };
 
@@ -521,11 +567,25 @@ Tugas WAJIB:
         parsed.emotionMoments ?? [],
         durationSec
       );
+      const resolvedTitle = parsed.autoTitle?.trim() || clip.title;
+      const normalizedIntro = normalizeAiClipIntro(
+        {
+          tag: parsed.introTag,
+          headline: parsed.introHeadline || resolvedTitle,
+          teaser: parsed.introTeaser,
+        },
+        {
+          title: resolvedTitle,
+          ringkasanTeks: clip.ringkasanTeks,
+          hookLine: clip.hookLine,
+          episodeTitle: episode.title,
+        }
+      );
 
       return {
         verbatimTranscript: verbatimTranscript || clip.transcriptExcerpt,
         cues: anchoredCues,
-        autoTitle: parsed.autoTitle?.trim() || clip.title,
+        autoTitle: resolvedTitle,
         autoCaption: parsed.autoCaption?.trim() || clip.platformCopies.youtube_shorts.caption,
         hashtags: cleanTags,
         emotionMoments: normalizedEmotions,
@@ -534,13 +594,14 @@ Tugas WAJIB:
           (normalizedEmotions.length > 0
             ? `AI menambahkan ${normalizedEmotions.length} momen emosi otomatis (animasi & efek suara retensi) mengikuti intonasi pembicara.`
             : 'Nuansa percakapan natural tanpa efek berlebih.'),
+        intro: normalizedIntro,
       };
     } catch {
       // Try next fallback
     }
   }
 
-  // Even if metadata generation fails, return the accurately synchronized verbatim cues!
+  // Even if metadata generation fails, return the accurately synchronized verbatim cues & smart intro!
   return {
     verbatimTranscript: verbatimTranscript || clip.transcriptExcerpt,
     cues: anchoredCues,
@@ -551,6 +612,7 @@ Tugas WAJIB:
     hashtags: clip.platformCopies.youtube_shorts.hashtags,
     emotionMoments: [],
     emotionSummary: 'Transkrip audio tersinkronisasi presisi.',
+    intro: fallbackIntro,
   };
 }
 
@@ -814,9 +876,32 @@ export async function analyzeTrimmedClipIntelligence(params: {
     }
   }
 
+  const existingNormalized = normalizeTranscribedCues(clip.captionCues, durationSec);
+  const guaranteedFallbackCues =
+    existingNormalized.length > 0
+      ? existingNormalized
+      : synthesizeFallbackCaptionCues(
+          clip.transcriptExcerpt || clip.ringkasanTeks || clip.hookLine || clip.title,
+          durationSec
+        );
+  const fallbackIntro = normalizeAiClipIntro(
+    {
+      tag: clip.introTag,
+      headline: clip.introHeadline || clip.autoGeneratedTitle || clip.title,
+      teaser: clip.introTeaser,
+      durationSec: clip.introDurationSec,
+    },
+    {
+      title: clip.autoGeneratedTitle || clip.title,
+      ringkasanTeks: clip.ringkasanTeks,
+      hookLine: clip.hookLine,
+      episodeTitle: episode.title,
+    }
+  );
+
   const fallbackResult: ClipIntelligenceResult = {
     version: INTELLIGENCE_CACHE_VERSION,
-    cues: normalizeTranscribedCues(clip.captionCues, durationSec),
+    cues: guaranteedFallbackCues,
     verbatimTranscript: clip.transcriptExcerpt,
     autoTitle: clip.autoGeneratedTitle || clip.title,
     autoCaption:
@@ -828,6 +913,7 @@ export async function analyzeTrimmedClipIntelligence(params: {
     speakerFocusSummary: 'Fokus kamera otomatis di tengah pembicara.',
     emotionMoments: [],
     emotionSummary: 'Efek emosi otomatis siap saat analisis AI aktif.',
+    intro: fallbackIntro,
   };
 
   const ai = getAiClient();
@@ -868,7 +954,10 @@ export async function analyzeTrimmedClipIntelligence(params: {
     checkAborted();
     const finalResult: ClipIntelligenceResult = {
       version: INTELLIGENCE_CACHE_VERSION,
-      cues: sttAndEmotion?.cues ?? fallbackResult.cues,
+      cues:
+        sttAndEmotion && sttAndEmotion.cues.length > 0
+          ? sttAndEmotion.cues
+          : fallbackResult.cues,
       verbatimTranscript: sttAndEmotion?.verbatimTranscript ?? fallbackResult.verbatimTranscript,
       autoTitle: sttAndEmotion?.autoTitle ?? fallbackResult.autoTitle,
       autoCaption: sttAndEmotion?.autoCaption ?? fallbackResult.autoCaption,
@@ -878,6 +967,7 @@ export async function analyzeTrimmedClipIntelligence(params: {
       speakerFocusSummary: speakerResult?.summary ?? fallbackResult.speakerFocusSummary,
       emotionMoments: sttAndEmotion?.emotionMoments ?? fallbackResult.emotionMoments,
       emotionSummary: sttAndEmotion?.emotionSummary ?? fallbackResult.emotionSummary,
+      intro: sttAndEmotion?.intro ?? fallbackResult.intro,
     };
 
     if (cachePath && finalResult.subtitleSource === 'audio_transcribed') {

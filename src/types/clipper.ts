@@ -52,6 +52,37 @@ export interface EmotionMoment {
   intensity: number;
 }
 
+export type OverlayFontFamilyId =
+  | 'modern_sans'
+  | 'condensed_viral'
+  | 'editorial_serif'
+  | 'studio_mono';
+
+export type OverlayTextAlign = 'left' | 'center' | 'right';
+
+export type SubtitleBoxStyle = 'outline' | 'box' | 'shadow';
+
+export interface ClipOverlayStyle {
+  fontFamily: OverlayFontFamilyId;
+  textAlign: OverlayTextAlign;
+  customIntroTag?: string;
+  customIntroHeadline?: string;
+  customIntroTeaser?: string;
+  introDurationSec: number;
+  introPositionY: number;
+  introFontScale: number;
+  introAccentColor: string;
+  customTopTitle?: string;
+  showTopTitle: boolean;
+  showHookFooter: boolean;
+  topTitlePositionY: number;
+  subtitlePositionY: number;
+  subtitleFontScale: number;
+  subtitleTextColor: string;
+  subtitleHighlightColor: string;
+  subtitleBoxStyle: SubtitleBoxStyle;
+}
+
 export interface PodcastClip {
   id: string;
   episodeId: string;
@@ -86,6 +117,12 @@ export interface PodcastClip {
   emotionSummary?: string;
   emotionMoments?: EmotionMoment[];
   emotionEffectsEnabled?: boolean;
+  introEnabled?: boolean;
+  introTag?: string;
+  introHeadline?: string;
+  introTeaser?: string;
+  introDurationSec?: number;
+  overlayStyle?: ClipOverlayStyle;
   platformCopies: Record<SocialPlatform, PlatformCopy>;
 }
 
@@ -137,6 +174,7 @@ export interface BotAutomationConfig {
   autoAddHashtagShorts: boolean;
   enableUltraHdRender: boolean;
   enableAiEmotionEffects: boolean;
+  enableAiIntro: boolean;
   defaultRenderQuality: ClipRenderQuality;
   defaultRenderLayout: 'shorts_full_bleed' | 'shorts_studio_focus' | 'full_16_9_focus';
 }

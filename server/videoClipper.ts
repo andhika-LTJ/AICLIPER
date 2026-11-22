@@ -4,11 +4,17 @@ import os from 'os';
 import path from 'path';
 import { promisify } from 'util';
 import type {
+  ClipOverlayStyle,
   ClipRenderLayout,
   ClipRenderQuality,
   PodcastClip,
   PodcastEpisode,
 } from '../src/types/clipper.ts';
+import {
+  computeIntroAnchorLayout,
+  hexToFfmpegColor,
+  normalizeClipOverlayStyle,
+} from '../src/utils/clipOverlayStyle.ts';
 import {
   analyzeTrimmedClipIntelligence,
   type ClipIntelligenceResult,
@@ -34,6 +40,7 @@ import {
   validateNetscapeCookiesTxt,
 } from './downloaderParsers.ts';
 import {
+  assessSegmentDurationHealth,
   assessStreamSyncHealth,
   type StreamSyncAssessment,
 } from './audioSyncMath.ts';
@@ -44,6 +51,13 @@ import {
   isMissingBinaryError,
   selectYtDlpReleaseAsset,
 } from './ffmpegBinaries.ts';
+import { ensureAssFontEnvironment } from './assFontEnv.ts';
+import {
+  buildIntroAudioExpr,
+  computeExactIntroTiming,
+  INTRO_FPS,
+  normalizeAiClipIntro,
+} from './videoIntroMath.ts';
 
 const execFileAsync = promisify(execFile);
 
@@ -364,10 +378,11 @@ async function probeVideoMeta(videoPath: string): Promise<{
 async function runFfmpegWithProgress(params: {
   args: string[];
   durationSec: number;
+  env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   onPercent?: (ratio01: number) => void;
 }): Promise<void> {
-  const { args, durationSec, signal, onPercent } = params;
+  const { args, durationSec, env, signal, onPercent } = params;
   throwIfAborted(signal);
   const ffmpegBin = await ensureFfmpegPath();
 
@@ -379,6 +394,7 @@ async function runFfmpegWithProgress(params: {
 
     const child = spawn(ffmpegBin, ['-progress', 'pipe:1', '-nostats', ...args], {
       stdio: ['ignore', 'pipe', 'pipe'],
+      env: env ? { ...process.env, ...env } : process.env,
     });
 
     let stderrTail = '';
@@ -467,12 +483,20 @@ async function runFfmpegWithProgress(params: {
  * Extracts only the trimmed clip window using ultra-fast stream-copy first (~1-2s),
  * avoiding double video encoding before the studio render pass.
  */
+class TruncatedSegmentError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TruncatedSegmentError';
+  }
+}
+
 async function extractRawTrimmedSegment(params: {
   inputSource: string;
   isRemoteUrl: boolean;
   extraHeaders?: Record<string, string>;
   startSec: number;
   durationSec: number;
+  episodeDurationSec?: number;
   needSeekTrim: boolean;
   outputPath: string;
   signal?: AbortSignal;
@@ -483,6 +507,7 @@ async function extractRawTrimmedSegment(params: {
     extraHeaders,
     startSec,
     durationSec,
+    episodeDurationSec,
     needSeekTrim,
     outputPath,
     signal,
@@ -576,8 +601,19 @@ async function extractRawTrimmedSegment(params: {
         });
         throwIfAborted(signal);
         const meta = await probeVideoMeta(outputPath);
+        const durationCheck = assessSegmentDurationHealth({
+          requestedDurationSec: durationSec,
+          actualDurationSec: meta.durationSec,
+          startSec,
+          episodeDurationSec,
+        });
+        if (!durationCheck.isComplete) {
+          throw new TruncatedSegmentError(
+            durationCheck.reason ||
+              `Potongan video terpotong pendek (${meta.durationSec.toFixed(1)}d dari ${durationSec}d).`
+          );
+        }
         if (
-          meta.durationSec >= Math.max(3, durationSec * 0.5) &&
           meta.durationSec <= durationSec + 2.5 &&
           meta.syncHealth.isSynced
         ) {
@@ -603,6 +639,9 @@ async function extractRawTrimmedSegment(params: {
       }
       if (isAbortLikeError(err, signal)) {
         throw new RenderCancelledError();
+      }
+      if (err instanceof TruncatedSegmentError) {
+        throw err;
       }
     }
   }
@@ -664,7 +703,20 @@ async function extractRawTrimmedSegment(params: {
       signal,
     });
     throwIfAborted(signal);
-    await probeVideoMeta(outputPath);
+    const finalRawMeta = await probeVideoMeta(outputPath);
+    const finalDurationCheck = assessSegmentDurationHealth({
+      requestedDurationSec: durationSec,
+      actualDurationSec: finalRawMeta.durationSec,
+      startSec,
+      episodeDurationSec,
+    });
+    if (!finalDurationCheck.isComplete) {
+      if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+      throw new TruncatedSegmentError(
+        finalDurationCheck.reason ||
+          `Potongan video terpotong pendek (${finalRawMeta.durationSec.toFixed(1)}d dari ${durationSec}d).`
+      );
+    }
   } catch (err) {
     if (isAbortLikeError(err, signal)) {
       if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
@@ -966,66 +1018,83 @@ async function acquireRawClipSegment(params: {
     }
 
     // 3. Single-pass parallel HD race (SaveNow + AMP4 + NoTube, capped ~25s worst-case)
+    //    If a pre-trimmed provider returns a truncated clip (e.g. 15s instead of 50s),
+    //    automatically retry once with an untrimmed full stream and seek locally via FFmpeg!
     let thirdPartyErr: unknown = null;
-    throwIfAborted(signal);
-    onProgress?.('Mengunduh potongan video HD (SaveNow / AMP4 / NoTube)...', 15);
-    try {
-      const stream = await resolveThirdPartyMp4Stream({
-        sourceUrl: episode.sourceUrl,
-        videoId: episode.videoId,
-        startSec: clip.startSec,
-        endSec: clip.endSec,
-        preferredQuality,
-        signal,
-      });
+    for (const skipPreTrim of [false, true]) {
       throwIfAborted(signal);
-
-      onProgress?.(`Menyiapkan stream ${stream.qualityTier ?? 'HD'} (${stream.provider})...`, 24);
-      if (stream.isDirectChunkedDownload || stream.isPreTrimmed) {
-        await downloadChunkedStreamToFile({
-          streamUrl: stream.streamUrl,
-          destPath: chunkedTempPath,
-          headers: stream.headers,
+      onProgress?.(
+        skipPreTrim
+          ? 'Potongan awal terpotong pendek, mengambil stream penuh agar durasi utuh...'
+          : 'Mengunduh potongan video HD (SaveNow / AMP4 / NoTube)...',
+        skipPreTrim ? 18 : 15
+      );
+      try {
+        const stream = await resolveThirdPartyMp4Stream({
+          sourceUrl: episode.sourceUrl,
+          videoId: episode.videoId,
+          startSec: clip.startSec,
+          endSec: clip.endSec,
+          preferredQuality,
+          skipCache: skipPreTrim,
+          skipPreTrim,
           signal,
         });
+        throwIfAborted(signal);
+
+        onProgress?.(`Menyiapkan stream ${stream.qualityTier ?? 'HD'} (${stream.provider})...`, 24);
+        if (stream.isDirectChunkedDownload || stream.isPreTrimmed) {
+          await downloadChunkedStreamToFile({
+            streamUrl: stream.streamUrl,
+            destPath: chunkedTempPath,
+            headers: stream.headers,
+            signal,
+          });
+          await extractRawTrimmedSegment({
+            inputSource: chunkedTempPath,
+            isRemoteUrl: false,
+            startSec: clip.startSec,
+            durationSec,
+            episodeDurationSec: episode.durationSec,
+            needSeekTrim: !stream.isPreTrimmed,
+            outputPath: rawSegmentPath,
+            signal,
+          });
+          return 'third_party_downloader';
+        }
+
         await extractRawTrimmedSegment({
-          inputSource: chunkedTempPath,
-          isRemoteUrl: false,
+          inputSource: stream.streamUrl,
+          isRemoteUrl: true,
+          extraHeaders: stream.headers,
           startSec: clip.startSec,
           durationSec,
+          episodeDurationSec: episode.durationSec,
           needSeekTrim: !stream.isPreTrimmed,
           outputPath: rawSegmentPath,
           signal,
         });
         return 'third_party_downloader';
-      }
-
-      await extractRawTrimmedSegment({
-        inputSource: stream.streamUrl,
-        isRemoteUrl: true,
-        extraHeaders: stream.headers,
-        startSec: clip.startSec,
-        durationSec,
-        needSeekTrim: !stream.isPreTrimmed,
-        outputPath: rawSegmentPath,
-        signal,
-      });
-      return 'third_party_downloader';
-    } catch (err) {
-      if (isAbortLikeError(err, signal)) {
+      } catch (err) {
+        if (isAbortLikeError(err, signal)) {
+          if (fs.existsSync(chunkedTempPath)) fs.unlinkSync(chunkedTempPath);
+          if (fs.existsSync(rawSegmentPath)) fs.unlinkSync(rawSegmentPath);
+          throw new RenderCancelledError();
+        }
+        if (isMissingBinaryError(err)) {
+          if (fs.existsSync(chunkedTempPath)) fs.unlinkSync(chunkedTempPath);
+          if (fs.existsSync(rawSegmentPath)) fs.unlinkSync(rawSegmentPath);
+          throw err;
+        }
+        thirdPartyErr = err;
+        invalidateEpisodeStreamCache(episode.videoId || episode.sourceUrl);
         if (fs.existsSync(chunkedTempPath)) fs.unlinkSync(chunkedTempPath);
         if (fs.existsSync(rawSegmentPath)) fs.unlinkSync(rawSegmentPath);
-        throw new RenderCancelledError();
+        // Only run the second (untrimmed) pass when the first pass failed due to truncation!
+        if (!(err instanceof TruncatedSegmentError)) {
+          break;
+        }
       }
-      if (isMissingBinaryError(err)) {
-        if (fs.existsSync(chunkedTempPath)) fs.unlinkSync(chunkedTempPath);
-        if (fs.existsSync(rawSegmentPath)) fs.unlinkSync(rawSegmentPath);
-        throw err;
-      }
-      thirdPartyErr = err;
-      invalidateEpisodeStreamCache(episode.videoId || episode.sourceUrl);
-      if (fs.existsSync(chunkedTempPath)) fs.unlinkSync(chunkedTempPath);
-      if (fs.existsSync(rawSegmentPath)) fs.unlinkSync(rawSegmentPath);
     }
 
     // 4. Final fail-fast yt-dlp attempt (only if cookies path wasn't already tried)
@@ -1140,20 +1209,56 @@ function buildFastClarityChain(
   ].join(',');
 }
 
-function buildStudioFilterComplex(params: {
+export function buildStudioFilterComplex(params: {
   layout: CanonicalStudioLayout;
   quality: CanonicalRenderQuality;
   sourceW: number;
   sourceH: number;
   assPath: string;
+  fontsDir: string;
   intelligence: ClipIntelligenceResult;
+  overlayStyle?: Partial<ClipOverlayStyle> | null;
+  introTiming?: {
+    frameCount: number;
+    loopExtraFrames: number;
+    exactDurationSec: number;
+  } | null;
 }): string {
-  const { layout, quality, sourceW, sourceH, assPath, intelligence } = params;
+  const {
+    layout,
+    quality,
+    sourceW,
+    sourceH,
+    assPath,
+    fontsDir,
+    intelligence,
+    overlayStyle,
+    introTiming,
+  } = params;
   const assEscaped = escapeFfmpegFilterPath(assPath);
+  const fontsDirEscaped = escapeFfmpegFilterPath(fontsDir);
+  const assFilter = `ass='${assEscaped}':fontsdir='${fontsDirEscaped}'`;
   const { outW, outH } = getTargetCanvasDimensions(layout, quality);
+  const isLandscape = layout === 'full_16_9_focus';
+  const normStyle = normalizeClipOverlayStyle(overlayStyle);
   const avgZoom =
     intelligence.keyframes.reduce((acc, k) => acc + k.zoomScale, 0) /
     Math.max(1, intelligence.keyframes.length);
+
+  // Build crisp 1-frame-blurred cinematic AI intro clip looped to exact 30fps frame count
+  const buildIntroChain = (inputLabel: string): string => {
+    if (!introTiming) return '';
+    const blurW = isLandscape ? 320 : 180;
+    const blurH = isLandscape ? 180 : 320;
+    const anchor = computeIntroAnchorLayout({ isLandscape, style: normStyle });
+    const barW = Math.round(outW * anchor.barWRatio);
+    const barH = Math.max(4, Math.round(outH * (isLandscape ? 0.005 : 0.0035)));
+    const barX = Math.max(0, Math.min(outW - barW, Math.round(outW * anchor.barXRatio)));
+    const barY = Math.max(0, Math.min(outH - barH, Math.round(outH * anchor.barYRatio)));
+    const barColor = hexToFfmpegColor(normStyle.introAccentColor);
+    const fadeOutStart = Math.max(0.2, introTiming.exactDurationSec - 0.24).toFixed(4);
+    return `${inputLabel}trim=end_frame=1,setpts=PTS-STARTPTS,scale=${blurW}:${blurH}:force_original_aspect_ratio=increase:flags=fast_bilinear,crop=${blurW}:${blurH},boxblur=8:2,eq=brightness=-0.30:contrast=1.14:saturation=1.18,scale=${outW}:${outH}:flags=fast_bilinear,setsar=1,format=yuv420p,drawbox=x=0:y=0:w=${outW}:h=${outH}:color=0x090D16@0.44:t=fill,drawbox=x=${barX}:y=${barY}:w=${barW}:h=${barH}:color=${barColor}@0.94:t=fill,loop=loop=${introTiming.loopExtraFrames}:size=1:start=0,setpts=N/${INTRO_FPS}/TB,fps=${INTRO_FPS},fade=t=out:st=${fadeOutStart}:d=0.24[intro_v]`;
+  };
 
   if (layout === 'full_16_9_focus') {
     const safeZoom = sourceH >= 720 ? Math.max(1.14, Math.min(1.36, avgZoom)) : 1.1;
@@ -1174,10 +1279,21 @@ function buildStudioFilterComplex(params: {
     const topScrimH = Math.round(outH * 0.13);
     const botScrimH = Math.round(outH * 0.21);
     const clarity = buildFastClarityChain(sourceH, outW, outH, quality);
+    const mainBody = `crop=w=${cropW}:h=${cropH}:x='${xExpr}':y='${yExpr}',${clarity},setsar=1,format=yuv420p,drawbox=x=0:y=0:w=${outW}:h=${topScrimH}:color=0x000000@0.26:t=fill,drawbox=x=0:y=${outH - botScrimH}:w=${outW}:h=${botScrimH}:color=0x000000@0.30:t=fill`;
+
+    if (introTiming) {
+      return [
+        '[0:v]setpts=PTS-STARTPTS,split=2[introsrc][mainsrc]',
+        buildIntroChain('[introsrc]'),
+        `[mainsrc]${mainBody},fps=${INTRO_FPS},setpts=PTS-STARTPTS,fade=t=in:st=0:d=0.20[main_v]`,
+        '[intro_v][main_v]concat=n=2:v=1:a=0[comp]',
+        `[comp]${assFilter}[out]`,
+      ].join(';');
+    }
 
     return [
-      `[0:v]setpts=PTS-STARTPTS,crop=w=${cropW}:h=${cropH}:x='${xExpr}':y='${yExpr}',${clarity},drawbox=x=0:y=0:w=${outW}:h=${topScrimH}:color=0x000000@0.26:t=fill,drawbox=x=0:y=${outH - botScrimH}:w=${outW}:h=${botScrimH}:color=0x000000@0.30:t=fill[comp]`,
-      `[comp]ass='${assEscaped}'[out]`,
+      `[0:v]setpts=PTS-STARTPTS,${mainBody}[comp]`,
+      `[comp]${assFilter}[out]`,
     ].join(';');
   }
 
@@ -1202,13 +1318,25 @@ function buildStudioFilterComplex(params: {
     const fgY = Math.round(outH * 0.215);
     const fgClarity = buildFastClarityChain(sourceH, fgW, fgH, quality);
 
+    if (introTiming) {
+      return [
+        '[0:v]setpts=PTS-STARTPTS,split=3[introsrc][bgsrc][fgsrc]',
+        buildIntroChain('[introsrc]'),
+        `[bgsrc]scale=180:320:force_original_aspect_ratio=increase:flags=fast_bilinear,crop=180:320,boxblur=6:1,eq=brightness=-0.20:contrast=1.12:saturation=1.30,scale=${outW}:${outH}:flags=fast_bilinear,setsar=1[bg]`,
+        `[fgsrc]crop=w=${cropW}:h=${cropH}:x='${xExpr}':y='${yExpr}',${fgClarity},setsar=1[fg]`,
+        `[bg][fg]overlay=(W-w)/2:${fgY},setsar=1,format=yuv420p,fps=${INTRO_FPS},setpts=PTS-STARTPTS,fade=t=in:st=0:d=0.20[main_v]`,
+        '[intro_v][main_v]concat=n=2:v=1:a=0[comp]',
+        `[comp]${assFilter}[out]`,
+      ].join(';');
+    }
+
     // Fast low-res blur trick: blur at 180x320 then upscale cleanly (20x faster than blurring 4K!)
     return [
       '[0:v]setpts=PTS-STARTPTS,split=2[bgsrc][fgsrc]',
       `[bgsrc]scale=180:320:force_original_aspect_ratio=increase:flags=fast_bilinear,crop=180:320,boxblur=6:1,eq=brightness=-0.20:contrast=1.12:saturation=1.30,scale=${outW}:${outH}:flags=fast_bilinear[bg]`,
       `[fgsrc]crop=w=${cropW}:h=${cropH}:x='${xExpr}':y='${yExpr}',${fgClarity}[fg]`,
       `[bg][fg]overlay=(W-w)/2:${fgY}[comp]`,
-      `[comp]ass='${assEscaped}'[out]`,
+      `[comp]${assFilter}[out]`,
     ].join(';');
   }
 
@@ -1232,10 +1360,21 @@ function buildStudioFilterComplex(params: {
   const clarity = buildFastClarityChain(sourceH, outW, outH, quality);
   const topBand = Math.round(outH * 0.14);
   const botBand = Math.round(outH * 0.20);
+  const mainBody = `crop=w=${cropW}:h=${cropH}:x='${xExpr}':y='${yExpr}',${clarity},setsar=1,format=yuv420p,drawbox=x=0:y=0:w=${outW}:h=${topBand}:color=0x000000@0.24:t=fill,drawbox=x=0:y=${outH - botBand}:w=${outW}:h=${botBand}:color=0x000000@0.28:t=fill`;
+
+  if (introTiming) {
+    return [
+      '[0:v]setpts=PTS-STARTPTS,split=2[introsrc][mainsrc]',
+      buildIntroChain('[introsrc]'),
+      `[mainsrc]${mainBody},fps=${INTRO_FPS},setpts=PTS-STARTPTS,fade=t=in:st=0:d=0.20[main_v]`,
+      '[intro_v][main_v]concat=n=2:v=1:a=0[comp]',
+      `[comp]${assFilter}[out]`,
+    ].join(';');
+  }
 
   return [
-    `[0:v]setpts=PTS-STARTPTS,crop=w=${cropW}:h=${cropH}:x='${xExpr}':y='${yExpr}',${clarity},drawbox=x=0:y=0:w=${outW}:h=${topBand}:color=0x000000@0.24:t=fill,drawbox=x=0:y=${outH - botBand}:w=${outW}:h=${botBand}:color=0x000000@0.28:t=fill[comp]`,
-    `[comp]ass='${assEscaped}'[out]`,
+    `[0:v]setpts=PTS-STARTPTS,${mainBody}[comp]`,
+    `[comp]${assFilter}[out]`,
   ].join(';');
 }
 
@@ -1245,6 +1384,8 @@ export async function renderClipMp4(params: {
   layout?: ClipRenderLayout;
   quality?: ClipRenderQuality;
   enableEmotionEffects?: boolean;
+  enableAiIntro?: boolean;
+  overlayStyle?: Partial<ClipOverlayStyle> | null;
   signal?: AbortSignal;
   onProgress?: (stage: string, progress: number) => void;
 }): Promise<{
@@ -1258,6 +1399,8 @@ export async function renderClipMp4(params: {
   layout: CanonicalStudioLayout;
   quality: CanonicalRenderQuality;
   emotionEffectsEnabled: boolean;
+  introEnabled: boolean;
+  resolvedIntro: ClipIntelligenceResult['intro'];
   intelligence: ClipIntelligenceResult;
 }> {
   ensureDirs();
@@ -1267,6 +1410,8 @@ export async function renderClipMp4(params: {
   const layout = normalizeRenderLayout(params.layout);
   const quality = normalizeRenderQuality(params.quality);
   const enableEmotionEffects = params.enableEmotionEffects !== false;
+  const enableAiIntro = params.enableAiIntro !== false;
+  const effectiveOverlayStyle = normalizeClipOverlayStyle(params.overlayStyle ?? clip.overlayStyle);
   const outputPath = path.join(RENDERS_DIR, `${clip.id}.mp4`);
   const tmpRenderPath = path.join(TMP_DIR, `render_${clip.id}_${Date.now()}.mp4`);
   const assPath = path.join(TMP_DIR, `${clip.id}_${Date.now()}.ass`);
@@ -1289,8 +1434,19 @@ export async function renderClipMp4(params: {
     if (fs.existsSync(cachedRawSegmentPath)) {
       try {
         const cachedMeta = await probeVideoMeta(cachedRawSegmentPath);
-        // Always discard legacy <720p OR A/V-desynced cached segments (e.g. old -c:v copy GOP shift)
-        if (cachedMeta.height < 720 || !cachedMeta.syncHealth.isSynced) {
+        const requestedDurationSec = Math.max(5, clip.endSec - clip.startSec);
+        const cachedDurationCheck = assessSegmentDurationHealth({
+          requestedDurationSec,
+          actualDurationSec: cachedMeta.durationSec,
+          startSec: clip.startSec,
+          episodeDurationSec: episode.durationSec,
+        });
+        // Always discard legacy <720p, A/V-desynced, OR truncated cached segments
+        if (
+          cachedMeta.height < 720 ||
+          !cachedMeta.syncHealth.isSynced ||
+          !cachedDurationCheck.isComplete
+        ) {
           fs.unlinkSync(cachedRawSegmentPath);
         } else {
           rawReady = true;
@@ -1348,15 +1504,40 @@ export async function renderClipMp4(params: {
     });
     throwIfAborted(params.signal);
 
+    const fontEnv = ensureAssFontEnvironment();
+    const resolvedIntro = normalizeAiClipIntro(
+      {
+        tag: effectiveOverlayStyle.customIntroTag || intelligence.intro.tag,
+        headline: effectiveOverlayStyle.customIntroHeadline || intelligence.intro.headline,
+        teaser: effectiveOverlayStyle.customIntroTeaser || intelligence.intro.teaser,
+        durationSec: effectiveOverlayStyle.introDurationSec || intelligence.intro.durationSec,
+      },
+      {
+        title: effectiveOverlayStyle.customTopTitle || intelligence.autoTitle,
+        ringkasanTeks: clip.ringkasanTeks,
+        hookLine: clip.hookLine,
+        episodeTitle: episode.title,
+      }
+    );
+    const introTiming = enableAiIntro
+      ? computeExactIntroTiming(resolvedIntro.durationSec)
+      : null;
+
     const assContent = generateStudioAssScript({
       layout,
-      title: intelligence.autoTitle,
+      title: effectiveOverlayStyle.customTopTitle || intelligence.autoTitle,
       channelName: episode.channelName,
       hookCaption: intelligence.autoCaption,
       cues: intelligence.cues,
       durationSec: rawMeta.durationSec,
       emotionMoments: intelligence.emotionMoments,
       enableEmotionEffects,
+      intro: introTiming
+        ? { ...resolvedIntro, durationSec: introTiming.exactDurationSec }
+        : null,
+      enableAiIntro: Boolean(introTiming),
+      fontName: fontEnv.fontName,
+      overlayStyle: effectiveOverlayStyle,
     });
     fs.writeFileSync(assPath, assContent, 'utf-8');
 
@@ -1366,7 +1547,10 @@ export async function renderClipMp4(params: {
       sourceW: rawMeta.width,
       sourceH: rawMeta.height,
       assPath,
+      fontsDir: fontEnv.fontsDir,
       intelligence,
+      overlayStyle: effectiveOverlayStyle,
+      introTiming,
     });
 
     const hasAudioStream = Boolean(rawMeta.audioCodec);
@@ -1375,9 +1559,47 @@ export async function renderClipMp4(params: {
         ? buildEmotionAudioFilterGraph(intelligence.emotionMoments)
         : null;
 
-    const filterComplex = emotionAudioGraph
-      ? [videoFilterComplex, ...emotionAudioGraph.filterChains].join(';')
-      : videoFilterComplex;
+    const audioFilterChains: string[] = [];
+    let audioMapTarget = '0:a?';
+    let audioArgs: string[] = [];
+
+    if (hasAudioStream) {
+      if (introTiming) {
+        const introFadeOutStart = Math.max(0.2, introTiming.exactDurationSec - 0.34).toFixed(4);
+        audioFilterChains.push(
+          `aevalsrc=exprs='${buildIntroAudioExpr()}':s=44100:d=${introTiming.exactDurationSec.toFixed(4)}:c=stereo,volume=0.22,afade=t=in:st=0:d=0.16,afade=t=out:st=${introFadeOutStart}:d=0.34,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[intro_a]`
+        );
+        if (emotionAudioGraph) {
+          audioFilterChains.push(...emotionAudioGraph.filterChains);
+          audioFilterChains.push(
+            `${emotionAudioGraph.outputLabel}aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[main_a]`,
+            '[intro_a][main_a]concat=n=2:v=0:a=1[final_a]'
+          );
+        } else {
+          audioFilterChains.push(
+            '[0:a]asetpts=PTS-STARTPTS,aresample=44100:async=1:first_pts=0,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[main_a]',
+            '[intro_a][main_a]concat=n=2:v=0:a=1[final_a]'
+          );
+        }
+        audioMapTarget = '[final_a]';
+        audioArgs = ['-c:a', 'aac', '-b:a', '192k'];
+      } else if (emotionAudioGraph) {
+        audioFilterChains.push(...emotionAudioGraph.filterChains);
+        audioMapTarget = emotionAudioGraph.outputLabel;
+        audioArgs = ['-c:a', 'aac', '-b:a', '192k'];
+      } else {
+        audioMapTarget = '0:a';
+        audioArgs =
+          rawMeta.audioCodec === 'aac' && rawMeta.syncHealth.isSynced
+            ? ['-c:a', 'copy']
+            : ['-af', 'asetpts=PTS-STARTPTS,aresample=async=1:first_pts=0', '-c:a', 'aac', '-b:a', '192k'];
+      }
+    }
+
+    const filterComplex =
+      audioFilterChains.length > 0
+        ? [videoFilterComplex, ...audioFilterChains].join(';')
+        : videoFilterComplex;
 
     const qualityLabel = quality === '4k' ? '4K Ultra HD' : '1080p Full HD';
     const layoutLabel =
@@ -1399,21 +1621,10 @@ export async function renderClipMp4(params: {
     const encodeMaxrate = quality === '4k' ? '22000k' : '10000k';
     const encodeBufsize = quality === '4k' ? '44000k' : '20000k';
     const encodeLevel = quality === '4k' ? '5.1' : '4.2';
-    const audioMapTarget = !hasAudioStream
-      ? '0:a?'
-      : emotionAudioGraph
-        ? emotionAudioGraph.outputLabel
-        : '0:a';
-    const audioArgs = !hasAudioStream
-      ? []
-      : !emotionAudioGraph && rawMeta.audioCodec === 'aac' && rawMeta.syncHealth.isSynced
-        ? ['-c:a', 'copy']
-        : !emotionAudioGraph
-          ? ['-af', 'asetpts=PTS-STARTPTS,aresample=async=1:first_pts=0', '-c:a', 'aac', '-b:a', '192k']
-          : ['-c:a', 'aac', '-b:a', '192k'];
 
     await runFfmpegWithProgress({
-      durationSec: rawMeta.durationSec,
+      durationSec: rawMeta.durationSec + (introTiming?.exactDurationSec ?? 0),
+      env: { FONTCONFIG_FILE: fontEnv.fontconfigFile },
       signal: params.signal,
       onPercent: (ratio) => {
         const pct = Math.min(99, Math.round(ratio * 100));
@@ -1433,7 +1644,7 @@ export async function renderClipMp4(params: {
         '-map',
         audioMapTarget,
         '-r',
-        '30',
+        String(INTRO_FPS),
         '-c:v',
         'libx264',
         '-preset',
@@ -1474,6 +1685,10 @@ export async function renderClipMp4(params: {
       layout,
       quality,
       emotionEffectsEnabled: enableEmotionEffects,
+      introEnabled: Boolean(introTiming),
+      resolvedIntro: introTiming
+        ? { ...resolvedIntro, durationSec: introTiming.exactDurationSec }
+        : resolvedIntro,
       intelligence,
     };
   } finally {

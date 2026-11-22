@@ -1,7 +1,13 @@
 import { GoogleGenAI, Type, ThinkingLevel } from '@google/genai';
 import type { PodcastClip, PodcastEpisode, SocialPlatform } from '../src/types/clipper.ts';
 import { resolveAssetUrl } from '../src/utils/assetUrl.ts';
-import { clampClipRange, formatGeminiErrorMessage, formatTimestamp } from '../src/utils/youtube.ts';
+import {
+  clampClipRange,
+  formatGeminiErrorMessage,
+  formatTimestamp,
+  normalizeAutomationDurationBounds,
+  SHORTS_MAX_CLIP_SEC,
+} from '../src/utils/youtube.ts';
 
 interface TranscriptSegment {
   startSec: number;
@@ -237,8 +243,18 @@ export async function analyzePodcastWithGemini(
     },
   });
 
+  const normalizedBounds = normalizeAutomationDurationBounds(
+    options.minDurationSec,
+    options.maxDurationSec
+  );
+  const targetMinSec = Math.min(normalizedBounds.minClipSec, Math.max(15, ctx.durationSec));
+  const targetMaxSec = Math.min(
+    SHORTS_MAX_CLIP_SEC,
+    Math.max(targetMinSec, normalizedBounds.maxClipSec, Math.min(ctx.durationSec, targetMinSec + 15))
+  );
+
   const prompt = `Kamu adalah AI Viral Video Strategist & Produser Podcast Shorts kelas atas.
-Analisis link video podcast YouTube berikut untuk menemukan ${options.targetClipCount} momen PALING BERPOTENSI VIRAL (durasi ${options.minDurationSec}–${options.maxDurationSec} detik per klip).
+Analisis link video podcast YouTube berikut untuk menemukan ${options.targetClipCount} momen PALING BERPOTENSI VIRAL dengan durasi UTUH ${targetMinSec}–${targetMaxSec} detik per klip.
 
 Data Video:
 - URL: ${options.sourceUrl}
@@ -256,11 +272,14 @@ ${
 }
 
 Kriteria Pemilihan Momen Viral & Output WAJIB:
-1. Prioritaskan momen dengan **retensi 3 detik pertama tertinggi**: debat jujur, pengakuan mengejutkan, punchline kocak, insight melawan arus, atau momen emosional yang langsung memancing komentar.
-2. Beri nilai \`viralScore\` (angka bulat 70–99) dan \`viralReason\` (1 kalimat tegas mengapa potongan ini berpotensi viral/FYp). Urutkan dari \`viralScore\` tertinggi ke terendah.
-3. Buat **Judul Otomatis** (\`title\`, \`youtubeTitle\`, \`tiktokTitle\`, \`instagramTitle\`) yang singkat, memancing rasa penasaran tinggi (high-CTR, natural Bahasa Indonesia, tanpa clickbait kosong).${options.autoAddHashtagShorts ? ' Sertakan #Shorts pada \`youtubeTitle\`.' : ''}
-4. Buat **Caption & Deskripsi Otomatis** (\`youtubeCaption\`, \`tiktokCaption\`, \`instagramCaption\`, \`xCaption\`, \`linkedinCaption\`) yang lengkap, relevan 100% dengan episode ini, ada kalimat pembuka pancing diskusi, dan 4–6 hashtag tertarget.
-5. Pastikan \`startSec\` dan \`endSec\` berada di rentang 0..${ctx.durationSec} dengan panjang ${options.minDurationSec}–${options.maxDurationSec} detik, dan sertakan 4–6 \`captionCues\` awal yang akurat.`;
+1. **ALUR CERITA UTUH & DETAIL (ANTI-TERPOTONG 15 DETIK)**: Setiap klip WAJIB berdurasi ${targetMinSec}–${targetMaxSec} detik (JANGAN pernah memilih potongan pendek 10–25 detik yang menggantung!). Setiap rentang \`startSec\` sampai \`endSec\` HARUS memuat 3 bagian lengkap:
+   - (a) **Hook Pembuka (0–5 detik)** yang langsung memancing rasa penasaran,
+   - (b) **Isi / Penjelasan / Cerita Detail** yang benar-benar menjawab dan mengupas tuntas topik judul Short,
+   - (c) **Klimaks / Punchline / Kesimpulan Tuntas** hingga akhir kalimat (tidak terpotong di tengah argumen).
+2. **KESESUAIAN JUDUL 100%**: Judul Short (\`title\`, \`youtubeTitle\`, \`tiktokTitle\`, \`instagramTitle\`) WAJIB sesuai dengan penjelasan detail yang benar-benar dibahas di rentang \`startSec..endSec\` (singkat, high-CTR, natural Bahasa Indonesia, tanpa clickbait kosong).${options.autoAddHashtagShorts ? ' Sertakan #Shorts pada \`youtubeTitle\`.' : ''}
+3. Beri nilai \`viralScore\` (angka bulat 70–99) dan \`viralReason\` (1 kalimat tegas mengapa potongan ini berpotensi viral/FYP). Urutkan dari \`viralScore\` tertinggi ke terendah.
+4. Buat **Caption & Deskripsi Otomatis** (\`youtubeCaption\`, \`tiktokCaption\`, \`instagramCaption\`, \`xCaption\`, \`linkedinCaption\`) yang lengkap, relevan 100% dengan isi klip, ada kalimat pembuka pancing diskusi, dan 4–6 hashtag tertarget.
+5. Pastikan \`startSec\` dan \`endSec\` berada di rentang 0..${ctx.durationSec} dengan selisih \`endSec - startSec\` WAJIB minimal ${targetMinSec} detik dan maksimal ${targetMaxSec} detik, serta sertakan 6–10 \`captionCues\` yang tersebar merata dari awal sampai akhir klip.`;
 
   const responseSchema = {
     type: Type.OBJECT,
@@ -488,12 +507,14 @@ Kriteria Pemilihan Momen Viral & Output WAJIB:
     .slice(0, options.targetClipCount);
 
   const clips: PodcastClip[] = sortedRawClips.map((c, idx) => {
+    const rawStart = Number.isFinite(Number(c.startSec)) ? Number(c.startSec) : idx * 120;
+    const rawEnd = Number.isFinite(Number(c.endSec)) ? Number(c.endSec) : rawStart + targetMinSec;
     const clamped = clampClipRange(
-      Number(c.startSec) || idx * 120,
-      Number(c.endSec) || idx * 120 + options.minDurationSec,
+      rawStart,
+      rawEnd,
       ctx.durationSec,
-      15,
-      Math.max(options.maxDurationSec, 60)
+      targetMinSec,
+      targetMaxSec
     );
 
     const normalizePlatform = (

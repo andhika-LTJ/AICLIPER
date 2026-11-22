@@ -470,8 +470,12 @@ export default function App() {
                   }
                   defaultRenderLayout={store.automation.defaultRenderLayout}
                   defaultEmotionEffectsEnabled={store.automation.enableAiEmotionEffects}
+                  defaultAiIntroEnabled={store.automation.enableAiIntro}
                   ultraHdEnabled={store.automation.enableUltraHdRender}
                   onSaveTrim={handleSaveTrim}
+                  onSaveOverlayStyle={(clipId, overlayStyle) =>
+                    handleUpdateClip(clipId, { overlayStyle })
+                  }
                   onStoreUpdate={setStore}
                 />
 

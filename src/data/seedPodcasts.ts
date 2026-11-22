@@ -228,8 +228,8 @@ export const INITIAL_STUDIO_STATE: StudioStoreState = {
   automation: {
     autoPostOnAnalyze: false,
     defaultPlatforms: ['youtube_shorts', 'tiktok', 'instagram_reels', 'x_twitter', 'linkedin'],
-    minClipSec: 25,
-    maxClipSec: 55,
+    minClipSec: 45,
+    maxClipSec: 90,
     targetClipCount: 3,
     youtubeDefaultVisibility: 'public',
     webhookUrl: '',
@@ -239,5 +239,6 @@ export const INITIAL_STUDIO_STATE: StudioStoreState = {
     defaultRenderQuality: '1080p',
     defaultRenderLayout: 'shorts_full_bleed',
     enableAiEmotionEffects: true,
+    enableAiIntro: true,
   },
 };

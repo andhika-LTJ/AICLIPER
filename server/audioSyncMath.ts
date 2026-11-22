@@ -75,6 +75,67 @@ export function assessStreamSyncHealth(meta: StreamSyncMeta): StreamSyncAssessme
   };
 }
 
+export interface SegmentDurationAssessment {
+  isComplete: boolean;
+  expectedDurationSec: number;
+  minAcceptableSec: number;
+  actualDurationSec: number;
+  coverageRatio: number;
+  reason?: string;
+}
+
+/**
+ * Verifies that an extracted/downloaded raw clip segment actually covers the requested duration
+ * rather than being silently truncated (e.g., a third-party downloader returning only a 15s clip
+ * when a 50s segment was requested).
+ */
+export function assessSegmentDurationHealth(params: {
+  requestedDurationSec: number;
+  actualDurationSec: number;
+  startSec?: number;
+  episodeDurationSec?: number;
+}): SegmentDurationAssessment {
+  const req = Math.max(1, Number(params.requestedDurationSec) || 1);
+  const actual = Math.max(0, Number(params.actualDurationSec) || 0);
+  const start = typeof params.startSec === 'number' && Number.isFinite(params.startSec)
+    ? Math.max(0, params.startSec)
+    : 0;
+  const epDur =
+    typeof params.episodeDurationSec === 'number' &&
+    Number.isFinite(params.episodeDurationSec) &&
+    params.episodeDurationSec > start + 1
+      ? params.episodeDurationSec
+      : undefined;
+
+  // Cap expected duration only when we know the source episode ends earlier than startSec + req
+  const expectedDurationSec = epDur ? Math.min(req, epDur - start) : req;
+  // Require at least 80% coverage for >=20s clips (so a 45–90s clip truncated to 15s is always rejected!)
+  const minAcceptableSec =
+    expectedDurationSec >= 20
+      ? Math.max(14, Number((expectedDurationSec * 0.8).toFixed(2)))
+      : Math.max(3, Number((expectedDurationSec * 0.7).toFixed(2)));
+  const coverageRatio = Number((actual / Math.max(1, expectedDurationSec)).toFixed(3));
+
+  if (actual < minAcceptableSec) {
+    return {
+      isComplete: false,
+      expectedDurationSec: Number(expectedDurationSec.toFixed(2)),
+      minAcceptableSec,
+      actualDurationSec: Number(actual.toFixed(2)),
+      coverageRatio,
+      reason: `Potongan video terpotong terlalu pendek (${actual.toFixed(1)}d dari target ${expectedDurationSec.toFixed(1)}d).`,
+    };
+  }
+
+  return {
+    isComplete: true,
+    expectedDurationSec: Number(expectedDurationSec.toFixed(2)),
+    minAcceptableSec,
+    actualDurationSec: Number(actual.toFixed(2)),
+    coverageRatio,
+  };
+}
+
 /**
  * Splits clip audio into short anchored windows (default 12s) so parallel Gemini transcription
  * has zero cumulative timestamp drift across 30–60s podcast clips.

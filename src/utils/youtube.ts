@@ -81,22 +81,54 @@ export function parseTimestamp(label: string): number | null {
   return h * 3600 + m * 60 + s;
 }
 
+export const SHORTS_MIN_CLIP_SEC = 10;
+export const SHORTS_MAX_CLIP_SEC = 180;
+export const DEFAULT_AUTOMATION_MIN_CLIP_SEC = 45;
+export const DEFAULT_AUTOMATION_MAX_CLIP_SEC = 90;
+
 /**
- * Clamps and normalizes clip start/end bounds to stay within episode length and Shorts limits.
+ * Normalizes automation min/max clip duration settings so AI always creates
+ * detailed, complete podcast stories (20–120s min, 30–180s max, up to 3-minute YouTube Shorts).
+ */
+export function normalizeAutomationDurationBounds(
+  rawMinSec: number | undefined,
+  rawMaxSec: number | undefined
+): { minClipSec: number; maxClipSec: number } {
+  const parsedMin = Number(rawMinSec);
+  const parsedMax = Number(rawMaxSec);
+  const minClipSec = Math.max(
+    20,
+    Math.min(120, Number.isFinite(parsedMin) ? Math.round(parsedMin) : DEFAULT_AUTOMATION_MIN_CLIP_SEC)
+  );
+  const fallbackMax = Math.max(minClipSec + 15, DEFAULT_AUTOMATION_MAX_CLIP_SEC);
+  const maxClipSec = Math.max(
+    minClipSec + 10,
+    Math.min(
+      SHORTS_MAX_CLIP_SEC,
+      Number.isFinite(parsedMax) ? Math.round(parsedMax) : fallbackMax
+    )
+  );
+  return { minClipSec, maxClipSec };
+}
+
+/**
+ * Clamps and normalizes clip start/end bounds to stay within episode length and Shorts limits (up to 180s).
  */
 export function clampClipRange(
   startSec: number,
   endSec: number,
   episodeDurationSec: number,
-  minClipSec = 10,
-  maxClipSec = 60
+  minClipSec = SHORTS_MIN_CLIP_SEC,
+  maxClipSec = SHORTS_MAX_CLIP_SEC
 ): { startSec: number; endSec: number; durationSec: number } {
-  const safeMaxEpisode = Math.max(minClipSec, Math.floor(episodeDurationSec));
-  let start = Math.max(0, Math.min(Math.floor(startSec), safeMaxEpisode - minClipSec));
-  let end = Math.max(start + minClipSec, Math.min(Math.floor(endSec), safeMaxEpisode));
+  const safeMaxEpisode = Math.max(1, Math.floor(episodeDurationSec));
+  const effectiveMin = Math.max(1, Math.min(Math.floor(minClipSec), safeMaxEpisode));
+  const effectiveMax = Math.max(effectiveMin, Math.floor(maxClipSec));
+  const start = Math.max(0, Math.min(Math.floor(startSec), safeMaxEpisode - effectiveMin));
+  let end = Math.max(start + effectiveMin, Math.min(Math.floor(endSec), safeMaxEpisode));
 
-  if (end - start > maxClipSec) {
-    end = start + maxClipSec;
+  if (end - start > effectiveMax) {
+    end = start + effectiveMax;
   }
 
   return {

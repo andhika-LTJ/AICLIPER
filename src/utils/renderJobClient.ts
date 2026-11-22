@@ -1,4 +1,5 @@
 import type {
+  ClipOverlayStyle,
   ClipRenderLayout,
   ClipRenderQuality,
   StudioStoreState,
@@ -225,6 +226,8 @@ export async function runRenderClipJob(params: {
   layout: ClipRenderLayout;
   quality: ClipRenderQuality;
   enableEmotionEffects?: boolean;
+  enableAiIntro?: boolean;
+  overlayStyle?: Partial<ClipOverlayStyle>;
   forceRestart?: boolean;
   signal?: AbortSignal;
   onJobStarted?: (jobId: string) => void;
@@ -235,6 +238,8 @@ export async function runRenderClipJob(params: {
     layout,
     quality,
     enableEmotionEffects,
+    enableAiIntro,
+    overlayStyle,
     forceRestart,
     signal,
     onJobStarted,
@@ -286,6 +291,8 @@ export async function runRenderClipJob(params: {
             layout,
             quality,
             ...(typeof enableEmotionEffects === 'boolean' ? { enableEmotionEffects } : {}),
+            ...(typeof enableAiIntro === 'boolean' ? { enableAiIntro } : {}),
+            ...(overlayStyle ? { overlayStyle } : {}),
             ...(forceRestart ? { forceRestart: true } : {}),
           }),
           signal,

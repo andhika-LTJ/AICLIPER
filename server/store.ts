@@ -9,7 +9,13 @@ import type {
   SocialPlatform,
   StudioStoreState,
 } from '../src/types/clipper.ts';
-import { formatTimestamp, generateSrtFromClip } from '../src/utils/youtube.ts';
+import {
+  DEFAULT_AUTOMATION_MAX_CLIP_SEC,
+  DEFAULT_AUTOMATION_MIN_CLIP_SEC,
+  formatTimestamp,
+  generateSrtFromClip,
+  normalizeAutomationDurationBounds,
+} from '../src/utils/youtube.ts';
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 const RENDERS_DIR = path.join(DATA_DIR, 'renders');
@@ -63,6 +69,17 @@ function ensureStoreFile(): StudioStoreState {
       typeof rawAuto.enableAiEmotionEffects === 'boolean'
         ? rawAuto.enableAiEmotionEffects
         : baseAuto.enableAiEmotionEffects;
+    const enableAiIntro =
+      typeof rawAuto.enableAiIntro === 'boolean'
+        ? rawAuto.enableAiIntro
+        : baseAuto.enableAiIntro;
+    const isLegacyShortDefault = rawAuto.minClipSec === 25 && rawAuto.maxClipSec === 55;
+    const { minClipSec, maxClipSec } = isLegacyShortDefault
+      ? {
+          minClipSec: DEFAULT_AUTOMATION_MIN_CLIP_SEC,
+          maxClipSec: DEFAULT_AUTOMATION_MAX_CLIP_SEC,
+        }
+      : normalizeAutomationDurationBounds(rawAuto.minClipSec, rawAuto.maxClipSec);
 
     return {
       ...parsed,
@@ -70,10 +87,13 @@ function ensureStoreFile(): StudioStoreState {
       automation: {
         ...baseAuto,
         ...rawAuto,
+        minClipSec,
+        maxClipSec,
         enableUltraHdRender,
         defaultRenderQuality,
         defaultRenderLayout,
         enableAiEmotionEffects,
+        enableAiIntro,
       },
     };
   } catch {

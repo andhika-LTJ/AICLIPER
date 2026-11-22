@@ -170,6 +170,25 @@ export function AutomationSettingsView({
           <label className="flex items-start gap-3 cursor-pointer">
             <input
               type="checkbox"
+              checked={draft.enableAiIntro}
+              onChange={(e) =>
+                setDraft((p) => ({ ...p, enableAiIntro: e.target.checked }))
+              }
+              className="mt-1 w-4 h-4 accent-red-600 rounded"
+            />
+            <div>
+              <div className="text-sm font-semibold text-slate-900">
+                Aktifkan Intro Pembuka & Judul Video AI Otomatis (2.8 detik)
+              </div>
+              <p className="text-xs text-slate-500">
+                Menampilkan kartu intro berisi topik, judul menarik, dan pengantar singkat dari analisis AI sebelum masuk ke pembicaraan agar video lebih berisi.
+              </p>
+            </div>
+          </label>
+
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input
+              type="checkbox"
               checked={draft.enableAiEmotionEffects}
               onChange={(e) =>
                 setDraft((p) => ({ ...p, enableAiEmotionEffects: e.target.checked }))
@@ -301,75 +320,82 @@ export function AutomationSettingsView({
         </div>
 
         {/* Rule 2: Clip parameters */}
-        <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 pb-5 border-b border-slate-100">
-          <div>
-            <label htmlFor="cfg-clip-count" className="block text-xs font-semibold text-slate-700 mb-1">
-              Jumlah Klip / Podcast
-            </label>
-            <input
-              id="cfg-clip-count"
-              type="number"
-              min={1}
-              max={5}
-              value={draft.targetClipCount}
-              onChange={(e) =>
-                setDraft((p) => ({ ...p, targetClipCount: Number(e.target.value) || 3 }))
-              }
-              className="w-full h-10 px-3 text-sm font-mono tabular-nums bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:border-red-600 focus:outline-none"
-            />
+        <div className="space-y-3 pb-5 border-b border-slate-100">
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+            <div>
+              <label htmlFor="cfg-clip-count" className="block text-xs font-semibold text-slate-700 mb-1">
+                Jumlah Klip / Podcast
+              </label>
+              <input
+                id="cfg-clip-count"
+                type="number"
+                min={1}
+                max={5}
+                value={draft.targetClipCount}
+                onChange={(e) =>
+                  setDraft((p) => ({ ...p, targetClipCount: Number(e.target.value) || 3 }))
+                }
+                className="w-full h-10 px-3 text-sm font-mono tabular-nums bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:border-red-600 focus:outline-none"
+              />
+            </div>
+            <div>
+              <label htmlFor="cfg-min-sec" className="block text-xs font-semibold text-slate-700 mb-1">
+                Durasi Min (detik)
+              </label>
+              <input
+                id="cfg-min-sec"
+                type="number"
+                min={20}
+                max={120}
+                value={draft.minClipSec}
+                onChange={(e) =>
+                  setDraft((p) => ({ ...p, minClipSec: Number(e.target.value) || 45 }))
+                }
+                className="w-full h-10 px-3 text-sm font-mono tabular-nums bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:border-red-600 focus:outline-none"
+              />
+            </div>
+            <div>
+              <label htmlFor="cfg-max-sec" className="block text-xs font-semibold text-slate-700 mb-1">
+                Durasi Maks (detik)
+              </label>
+              <input
+                id="cfg-max-sec"
+                type="number"
+                min={30}
+                max={180}
+                value={draft.maxClipSec}
+                onChange={(e) =>
+                  setDraft((p) => ({ ...p, maxClipSec: Number(e.target.value) || 90 }))
+                }
+                className="w-full h-10 px-3 text-sm font-mono tabular-nums bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:border-red-600 focus:outline-none"
+              />
+            </div>
+            <div>
+              <label htmlFor="cfg-yt-vis" className="block text-xs font-semibold text-slate-700 mb-1">
+                Visibilitas YouTube
+              </label>
+              <select
+                id="cfg-yt-vis"
+                value={draft.youtubeDefaultVisibility}
+                onChange={(e) =>
+                  setDraft((p) => ({
+                    ...p,
+                    youtubeDefaultVisibility: e.target.value as BotAutomationConfig['youtubeDefaultVisibility'],
+                  }))
+                }
+                className="w-full h-10 px-3 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:border-red-600 focus:outline-none"
+              >
+                <option value="public">Publik</option>
+                <option value="unlisted">Tidak Publik</option>
+                <option value="private">Pribadi</option>
+              </select>
+            </div>
           </div>
-          <div>
-            <label htmlFor="cfg-min-sec" className="block text-xs font-semibold text-slate-700 mb-1">
-              Durasi Min (detik)
-            </label>
-            <input
-              id="cfg-min-sec"
-              type="number"
-              min={15}
-              max={45}
-              value={draft.minClipSec}
-              onChange={(e) =>
-                setDraft((p) => ({ ...p, minClipSec: Number(e.target.value) || 25 }))
-              }
-              className="w-full h-10 px-3 text-sm font-mono tabular-nums bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:border-red-600 focus:outline-none"
-            />
-          </div>
-          <div>
-            <label htmlFor="cfg-max-sec" className="block text-xs font-semibold text-slate-700 mb-1">
-              Durasi Maks (detik)
-            </label>
-            <input
-              id="cfg-max-sec"
-              type="number"
-              min={20}
-              max={60}
-              value={draft.maxClipSec}
-              onChange={(e) =>
-                setDraft((p) => ({ ...p, maxClipSec: Number(e.target.value) || 55 }))
-              }
-              className="w-full h-10 px-3 text-sm font-mono tabular-nums bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:border-red-600 focus:outline-none"
-            />
-          </div>
-          <div>
-            <label htmlFor="cfg-yt-vis" className="block text-xs font-semibold text-slate-700 mb-1">
-              Visibilitas YouTube
-            </label>
-            <select
-              id="cfg-yt-vis"
-              value={draft.youtubeDefaultVisibility}
-              onChange={(e) =>
-                setDraft((p) => ({
-                  ...p,
-                  youtubeDefaultVisibility: e.target.value as BotAutomationConfig['youtubeDefaultVisibility'],
-                }))
-              }
-              className="w-full h-10 px-3 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:border-red-600 focus:outline-none"
-            >
-              <option value="public">Publik</option>
-              <option value="unlisted">Tidak Publik</option>
-              <option value="private">Pribadi</option>
-            </select>
-          </div>
+          <p className="text-xs text-slate-500">
+            Rekomendasi: <strong className="text-slate-700">45–90 detik</strong> agar setiap klip
+            memuat hook, penjelasan detail, dan kesimpulan utuh sesuai judul Short (YouTube Shorts
+            mendukung hingga <strong className="text-slate-700">180 detik / 3 menit</strong>).
+          </p>
         </div>
 
         {/* Rule 3: Default social platforms */}

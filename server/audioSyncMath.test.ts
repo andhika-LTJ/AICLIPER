@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  assessSegmentDurationHealth,
   assessStreamSyncHealth,
   mergeAnchoredWindowCues,
   planAudioTranscriptionWindows,
@@ -84,4 +85,33 @@ test('mergeAnchoredWindowCues anchors cues without pushing later cues forward on
   assert.equal(merged[1].offsetSec, 3.2);
   assert.equal(merged[2].offsetSec, 12.5);
   assert.equal(merged[3].offsetSec, 16.0);
+});
+
+test('assessSegmentDurationHealth rejects truncated 15s clips when 45–90s was requested', () => {
+  const truncated = assessSegmentDurationHealth({
+    requestedDurationSec: 50,
+    actualDurationSec: 15.0,
+    startSec: 180,
+    episodeDurationSec: 1800,
+  });
+  assert.equal(truncated.isComplete, false);
+  assert.ok(truncated.reason?.includes('15.0d'));
+
+  const complete = assessSegmentDurationHealth({
+    requestedDurationSec: 60,
+    actualDurationSec: 58.6,
+    startSec: 180,
+    episodeDurationSec: 1800,
+  });
+  assert.equal(complete.isComplete, true);
+
+  // Near episode end: requested 60s starting at 1775 of 1800s episode -> expects 25s, 23s passes!
+  const nearEnd = assessSegmentDurationHealth({
+    requestedDurationSec: 60,
+    actualDurationSec: 23.0,
+    startSec: 1775,
+    episodeDurationSec: 1800,
+  });
+  assert.equal(nearEnd.isComplete, true);
+  assert.equal(nearEnd.expectedDurationSec, 25);
 });

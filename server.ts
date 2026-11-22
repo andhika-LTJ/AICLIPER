@@ -4,12 +4,23 @@ import fs from 'fs';
 import path from 'path';
 import { INITIAL_STUDIO_STATE } from './src/data/seedPodcasts.ts';
 import type {
+  ClipOverlayStyle,
   ClipRenderLayout,
   ClipRenderQuality,
   PodcastClip,
   SocialPlatform,
 } from './src/types/clipper.ts';
-import { clampClipRange, extractYouTubeVideoId } from './src/utils/youtube.ts';
+import {
+  computeOverlayStyleFingerprint,
+  normalizeClipOverlayStyle,
+} from './src/utils/clipOverlayStyle.ts';
+import {
+  clampClipRange,
+  extractYouTubeVideoId,
+  normalizeAutomationDurationBounds,
+  SHORTS_MAX_CLIP_SEC,
+  SHORTS_MIN_CLIP_SEC,
+} from './src/utils/youtube.ts';
 import { buildDistributionLog, dispatchWebhookIfConfigured, readStore, writeStore } from './server/store.ts';
 import {
   getTargetCanvasDimensions,
@@ -211,13 +222,20 @@ async function startServer() {
             patch.startSec ?? existing.startSec,
             patch.endSec ?? existing.endSec,
             maxEpDuration,
-            10,
-            60
+            SHORTS_MIN_CLIP_SEC,
+            SHORTS_MAX_CLIP_SEC
           )
         : { startSec: existing.startSec, endSec: existing.endSec };
 
     const rangeChanged =
       nextRange.startSec !== existing.startSec || nextRange.endSec !== existing.endSec;
+
+    const nextOverlayStyle =
+      patch.overlayStyle === null
+        ? undefined
+        : patch.overlayStyle
+          ? normalizeClipOverlayStyle(patch.overlayStyle)
+          : existing.overlayStyle;
 
     const updatedClip: PodcastClip = {
       ...existing,
@@ -226,6 +244,7 @@ async function startServer() {
       episodeId: existing.episodeId,
       startSec: nextRange.startSec,
       endSec: nextRange.endSec,
+      overlayStyle: nextOverlayStyle,
       ...(rangeChanged
         ? {
             renderedClipUrl: undefined,
@@ -239,6 +258,11 @@ async function startServer() {
             speakerFocusSummary: undefined,
             emotionMoments: undefined,
             emotionSummary: undefined,
+            introEnabled: undefined,
+            introTag: undefined,
+            introHeadline: undefined,
+            introTeaser: undefined,
+            introDurationSec: undefined,
           }
         : {}),
     };
@@ -438,10 +462,9 @@ async function startServer() {
   app.put('/api/automation', (req, res) => {
     const store = readStore();
     const incoming = req.body as Partial<typeof store.automation>;
-    const minClipSec = Math.max(15, Math.min(45, Number(incoming.minClipSec ?? store.automation.minClipSec)));
-    const maxClipSec = Math.max(
-      minClipSec + 5,
-      Math.min(60, Number(incoming.maxClipSec ?? store.automation.maxClipSec))
+    const { minClipSec, maxClipSec } = normalizeAutomationDurationBounds(
+      incoming.minClipSec ?? store.automation.minClipSec,
+      incoming.maxClipSec ?? store.automation.maxClipSec
     );
     const targetClipCount = Math.max(
       1,
@@ -466,6 +489,10 @@ async function startServer() {
       typeof incoming.enableAiEmotionEffects === 'boolean'
         ? incoming.enableAiEmotionEffects
         : store.automation.enableAiEmotionEffects;
+    const enableAiIntro =
+      typeof incoming.enableAiIntro === 'boolean'
+        ? incoming.enableAiIntro
+        : store.automation.enableAiIntro;
 
     const nextStore = writeStore({
       ...store,
@@ -479,6 +506,7 @@ async function startServer() {
         defaultRenderQuality,
         defaultRenderLayout,
         enableAiEmotionEffects,
+        enableAiIntro,
       },
     });
     res.json({ automation: nextStore.automation, store: nextStore });
@@ -799,6 +827,8 @@ async function startServer() {
       layout?: ClipRenderLayout;
       quality?: ClipRenderQuality | string;
       enableEmotionEffects?: boolean;
+      enableAiIntro?: boolean;
+      overlayStyle?: Partial<ClipOverlayStyle> | null;
       forceRestart?: boolean;
     };
     const clipId = explicitClipId ?? body.clipId;
@@ -831,9 +861,20 @@ async function startServer() {
       typeof body.enableEmotionEffects === 'boolean'
         ? body.enableEmotionEffects
         : store.automation.enableAiEmotionEffects;
+    const resolvedAiIntro =
+      typeof body.enableAiIntro === 'boolean'
+        ? body.enableAiIntro
+        : store.automation.enableAiIntro;
+    const resolvedOverlayStyle =
+      body.overlayStyle !== undefined
+        ? body.overlayStyle
+          ? normalizeClipOverlayStyle(body.overlayStyle)
+          : undefined
+        : clip.overlayStyle;
+    const styleFingerprint = computeOverlayStyleFingerprint(resolvedOverlayStyle);
     const targetDims = getTargetCanvasDimensions(resolvedLayout, resolvedQuality);
 
-    const dedupeKey = `${clip.id}:${resolvedLayout}:${resolvedQuality}:${resolvedEmotionEffects ? 'emo1' : 'emo0'}:${clip.startSec}-${clip.endSec}`;
+    const dedupeKey = `${clip.id}:${resolvedLayout}:${resolvedQuality}:${resolvedEmotionEffects ? 'emo1' : 'emo0'}:${resolvedAiIntro ? 'intro1' : 'intro0'}:${styleFingerprint}:${clip.startSec}-${clip.endSec}`;
     const initialStage =
       resolvedQuality === '4k'
         ? 'Menyiapkan render 4K Ultra HD (2160p)...'
@@ -873,6 +914,8 @@ async function startServer() {
           layout: resolvedLayout,
           quality: resolvedQuality,
           enableEmotionEffects: resolvedEmotionEffects,
+          enableAiIntro: resolvedAiIntro,
+          overlayStyle: resolvedOverlayStyle,
           signal: jobSignal,
           onProgress: (stage, progress) => {
             renderJobManager.updateProgress(job.jobId, stage, progress);
@@ -923,6 +966,12 @@ async function startServer() {
           emotionSummary: intel.emotionSummary,
           emotionMoments: intel.emotionMoments,
           emotionEffectsEnabled: result.emotionEffectsEnabled,
+          introEnabled: result.introEnabled,
+          introTag: result.resolvedIntro.tag,
+          introHeadline: result.resolvedIntro.headline,
+          introTeaser: result.resolvedIntro.teaser,
+          introDurationSec: result.resolvedIntro.durationSec,
+          overlayStyle: resolvedOverlayStyle ?? latestClip.overlayStyle,
           platformCopies: {
             ...latestClip.platformCopies,
             youtube_shorts: nextYoutubeCopy,
@@ -950,6 +999,8 @@ async function startServer() {
           emotionEffectsEnabled: result.emotionEffectsEnabled,
           emotionMoments: intel.emotionMoments,
           emotionSummary: intel.emotionSummary,
+          introEnabled: result.introEnabled,
+          intro: result.resolvedIntro,
           subtitleSource: intel.subtitleSource,
           speakerFocusSummary: intel.speakerFocusSummary,
           autoTitle: intel.autoTitle,

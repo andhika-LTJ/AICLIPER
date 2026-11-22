@@ -34,7 +34,7 @@ export const EMOTION_THEMES: Record<EmotionType, EmotionVisualTheme> = {
   funny: {
     emotion: 'funny',
     labelId: 'Lucu / Ngakak',
-    symbol: '★',
+    symbol: '•',
     assPrimaryColor: '&H0024D4FF&', // Warm bright gold
     assOutlineColor: '&H00121826&',
     defaultSfx: 'pop_spark',
@@ -42,7 +42,7 @@ export const EMOTION_THEMES: Record<EmotionType, EmotionVisualTheme> = {
   shock: {
     emotion: 'shock',
     labelId: 'Plot Twist / Kaget',
-    symbol: '⚡',
+    symbol: '•',
     assPrimaryColor: '&H003B82FF&', // Vibrant amber-orange
     assOutlineColor: '&H00090D16&',
     defaultSfx: 'vine_boom',
@@ -50,7 +50,7 @@ export const EMOTION_THEMES: Record<EmotionType, EmotionVisualTheme> = {
   hype: {
     emotion: 'hype',
     labelId: 'Semangat / Hype',
-    symbol: '▲',
+    symbol: '•',
     assPrimaryColor: '&H0022E6F5&', // Electric yellow-gold
     assOutlineColor: '&H00090D16&',
     defaultSfx: 'whoosh_riser',
@@ -58,7 +58,7 @@ export const EMOTION_THEMES: Record<EmotionType, EmotionVisualTheme> = {
   dramatic: {
     emotion: 'dramatic',
     labelId: 'Tegang / Serius',
-    symbol: '◆',
+    symbol: '•',
     assPrimaryColor: '&H007185FF&', // Warm coral-amber (not harsh red box)
     assOutlineColor: '&H00090D16&',
     defaultSfx: 'heartbeat_hit',
@@ -66,7 +66,7 @@ export const EMOTION_THEMES: Record<EmotionType, EmotionVisualTheme> = {
   warm: {
     emotion: 'warm',
     labelId: 'Hangat / Relate',
-    symbol: '✦',
+    symbol: '•',
     assPrimaryColor: '&H0099F36E&', // Soft studio mint green
     assOutlineColor: '&H00090D16&',
     defaultSfx: 'chuckle_pop',
@@ -74,7 +74,7 @@ export const EMOTION_THEMES: Record<EmotionType, EmotionVisualTheme> = {
   insight: {
     emotion: 'insight',
     labelId: 'Poin Emas / Insight',
-    symbol: '✦',
+    symbol: '•',
     assPrimaryColor: '&H00F8BD38&', // Crisp sky cyan
     assOutlineColor: '&H00090D16&',
     defaultSfx: 'chime_insight',
@@ -165,6 +165,7 @@ export function normalizeEmotionMoments(
     .filter((m) => m.durationSec >= 0.8)
     .sort((a, b) => a.timeSec - b.timeSec);
 
+  const maxMoments = Math.min(10, Math.max(6, Math.round(safeDur / 14)));
   const spaced: EmotionMoment[] = [];
   for (const moment of parsed) {
     const prev = spaced[spaced.length - 1];
@@ -176,7 +177,7 @@ export function normalizeEmotionMoments(
       continue;
     }
     spaced.push(moment);
-    if (spaced.length >= 6) break;
+    if (spaced.length >= maxMoments) break;
   }
 
   return spaced;
@@ -217,8 +218,9 @@ export function buildEmotionAssEvents(params: {
   moments: EmotionMoment[];
   layout: CanonicalStudioLayout;
   durationSec: number;
+  timeOffsetSec?: number;
 }): string[] {
-  const { moments, layout, durationSec } = params;
+  const { moments, layout, durationSec, timeOffsetSec = 0 } = params;
   if (!Array.isArray(moments) || moments.length === 0) return [];
 
   const isLandscape = layout === 'full_16_9_focus';
@@ -226,11 +228,13 @@ export function buildEmotionAssEvents(params: {
   const centerX = isLandscape ? 960 : 540;
   const startY = isLandscape ? 195 : layout === 'shorts_studio_focus' ? 320 : 280;
   const endY = startY - (isLandscape ? 14 : 20);
+  const offset = Math.max(0, Number(timeOffsetSec) || 0);
+  const totalTimelineEnd = offset + durationSec;
 
   return moments.map((m) => {
     const theme = getEmotionTheme(m.emotion);
-    const startTs = formatAssTime(m.timeSec);
-    const endTs = formatAssTime(Math.min(durationSec, m.timeSec + m.durationSec));
+    const startTs = formatAssTime(offset + m.timeSec);
+    const endTs = formatAssTime(Math.min(totalTimelineEnd, offset + m.timeSec + m.durationSec));
     const displayText = `${theme.symbol} ${m.badgeText} ${theme.symbol}`;
     // Kinetic elastic scale-in + subtle float + clean fade
     const animTags = [
