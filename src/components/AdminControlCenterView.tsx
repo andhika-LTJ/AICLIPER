@@ -91,9 +91,70 @@ interface AiUsagePayload {
   }>;
 }
 
+interface ReadinessLayerStatus {
+  configured: boolean;
+  authenticated: boolean;
+  connected: boolean;
+  operational: boolean;
+  tested: boolean;
+  mode?: string;
+  error?: string | null;
+}
+
+interface ProductionReadinessData {
+  phase?: string;
+  deploymentPhase?: string;
+  cloudRunServiceName?: string | null;
+  allCloudResourcesProvisioned: boolean;
+  database: ReadinessLayerStatus & {
+    backend: string;
+    activeMode: string;
+    latencyMs: number | null;
+  };
+  auth: {
+    adc: ReadinessLayerStatus;
+    oidcDispatcherConfigured: boolean;
+    staticGcpAccessTokenForbidden: boolean;
+  };
+  storage: ReadinessLayerStatus & { bucketName: string | null };
+  queue: ReadinessLayerStatus & { oidcConfigured: boolean };
+  renderWorker: ReadinessLayerStatus;
+  workerRuntime?: ReadinessLayerStatus;
+  runtimeResources?: {
+    memoryRssMb: number;
+    heapUsedMb: number;
+    heapTotalMb: number;
+    cpuCount: number;
+    loadAvg1m: number;
+    uptimeSec: number;
+    nodeVersion: string;
+  };
+  telemetry?: {
+    lastSuccessfulRenderAt: string | null;
+    avgQueueLatencyMs: number | null;
+    avgDispatchLatencyMs: number | null;
+    avgRenderDurationMs: number | null;
+    avgUploadDurationMs: number | null;
+    renderFailureCount: number;
+    renderRetryCount: number;
+    completedRenderCount: number;
+    activeRenderCount: number;
+    queuedRenderCount?: number;
+    processingRenderCount?: number;
+    recentErrors?: Array<{
+      jobId: string;
+      stage: string | null;
+      errorCode: string | null;
+      errorMessage: string | null;
+      updatedAt: string;
+    }>;
+  };
+}
+
 export function AdminControlCenterView({ currentUserRole }: AdminControlCenterViewProps) {
   const [activeTab, setActiveTab] = useState<AdminTab>('overview');
   const [overview, setOverview] = useState<AdminOverviewData | null>(null);
+  const [readiness, setReadiness] = useState<ProductionReadinessData | null>(null);
   const [users, setUsers] = useState<AdminUserRow[]>([]);
   const [userSearch, setUserSearch] = useState('');
   const [aiUsage, setAiUsage] = useState<AiUsagePayload | null>(null);
@@ -114,9 +175,15 @@ export function AdminControlCenterView({ currentUserRole }: AdminControlCenterVi
     setErrorMsg(null);
     try {
       if (tab === 'overview') {
-        const res = await apiFetch('/api/admin/overview');
+        const [res, readinessRes] = await Promise.all([
+          apiFetch('/api/admin/overview'),
+          apiFetch('/api/v3/readiness').catch(() => null),
+        ]);
         if (!res.ok) throw new Error('Gagal memuat ringkasan admin.');
         setOverview((await res.json()) as AdminOverviewData);
+        if (readinessRes && readinessRes.ok) {
+          setReadiness((await readinessRes.json()) as ProductionReadinessData);
+        }
       } else if (tab === 'users') {
         const res = await apiFetch(`/api/admin/users?search=${encodeURIComponent(userSearch)}`);
         if (!res.ok) throw new Error('Gagal memuat daftar pengguna.');
@@ -411,6 +478,168 @@ export function AdminControlCenterView({ currentUserRole }: AdminControlCenterVi
               </div>
             </div>
           </section>
+
+          {readiness && (
+            <section className="p-5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h2 className="font-display text-base font-bold text-slate-900 dark:text-white">
+                    Kesiapan Infrastruktur Production (Fase {readiness.deploymentPhase || readiness.phase || '0C'})
+                  </h2>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    Status diverifikasi langsung dari probe koneksi aktual — bukan hanya keberadaan env var.
+                  </p>
+                </div>
+                <span
+                  className={`px-2.5 py-1 rounded-md text-xs font-semibold ${
+                    readiness.allCloudResourcesProvisioned
+                      ? 'bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800'
+                      : 'bg-amber-50 text-amber-800 border border-amber-200 dark:bg-amber-950/40 dark:text-amber-200 dark:border-amber-800'
+                  }`}
+                >
+                  {readiness.allCloudResourcesProvisioned
+                    ? 'Cloud Production Operational'
+                    : 'Staged / Fallback Mode (Belum Semua Cloud Aktif)'}
+                </span>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead>
+                    <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-500 dark:text-slate-400">
+                      <th className="py-2 pr-3 font-semibold">Komponen</th>
+                      <th className="py-2 px-2 font-semibold">Mode</th>
+                      <th className="py-2 px-2 font-semibold">Configured</th>
+                      <th className="py-2 px-2 font-semibold">Auth</th>
+                      <th className="py-2 px-2 font-semibold">Connected</th>
+                      <th className="py-2 px-2 font-semibold">Operational</th>
+                      <th className="py-2 pl-2 font-semibold">Tested</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {(
+                      [
+                        ['PostgreSQL / Cloud SQL', readiness.database, readiness.database.activeMode],
+                        ['Google Cloud Storage', readiness.storage, readiness.storage.mode || 'local_fallback'],
+                        ['Cloud Tasks (OIDC)', readiness.queue, readiness.queue.mode || 'local_fallback'],
+                        ['Cloud Run Jobs', readiness.renderWorker, readiness.renderWorker.mode || 'local_worker_fallback'],
+                        ['Google ADC Identity', readiness.auth.adc, readiness.auth.adc.mode || 'adc_unavailable'],
+                        ...(readiness.workerRuntime
+                          ? [['Render Worker Runtime', readiness.workerRuntime, readiness.workerRuntime.mode || 'local_worker_fallback'] as const]
+                          : []),
+                      ] as Array<readonly [string, ReadinessLayerStatus, string]>
+                    ).map(([label, layer, modeLabel]) => {
+                      const cell = (val: boolean) => (
+                        <span
+                          className={`inline-block px-1.5 py-0.5 rounded font-mono text-[11px] font-semibold ${
+                            val
+                              ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300'
+                              : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400'
+                          }`}
+                        >
+                          {val ? 'YA' : 'TIDAK'}
+                        </span>
+                      );
+                      return (
+                        <tr key={label}>
+                          <td className="py-2.5 pr-3 font-medium text-slate-900 dark:text-white">
+                            {label}
+                            {layer.error && !layer.operational && (
+                              <div className="text-[11px] font-normal text-slate-500 dark:text-slate-400 mt-0.5 max-w-md truncate">
+                                {layer.error}
+                              </div>
+                            )}
+                          </td>
+                          <td className="py-2.5 px-2 font-mono text-[11px] text-slate-600 dark:text-slate-300">
+                            {modeLabel}
+                          </td>
+                          <td className="py-2.5 px-2">{cell(layer.configured)}</td>
+                          <td className="py-2.5 px-2">{cell(layer.authenticated)}</td>
+                          <td className="py-2.5 px-2">{cell(layer.connected)}</td>
+                          <td className="py-2.5 px-2">{cell(layer.operational)}</td>
+                          <td className="py-2.5 pl-2">{cell(layer.tested)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {readiness.telemetry && (
+                <div className="space-y-3 pt-2 border-t border-slate-100 dark:border-slate-800 text-xs">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                      <div className="text-slate-500">Antrean / Processing</div>
+                      <div className="font-mono font-semibold text-slate-900 dark:text-white mt-0.5">
+                        {readiness.telemetry.queuedRenderCount ?? 0} queued ·{' '}
+                        {readiness.telemetry.processingRenderCount ?? readiness.telemetry.activeRenderCount} aktif
+                      </div>
+                    </div>
+                    <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                      <div className="text-slate-500">Avg Queue / Dispatch</div>
+                      <div className="font-mono font-semibold text-slate-900 dark:text-white mt-0.5">
+                        {readiness.telemetry.avgQueueLatencyMs ?? '—'} ms /{' '}
+                        {readiness.telemetry.avgDispatchLatencyMs ?? '—'} ms
+                      </div>
+                    </div>
+                    <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                      <div className="text-slate-500">Avg Render / Upload</div>
+                      <div className="font-mono font-semibold text-slate-900 dark:text-white mt-0.5">
+                        {readiness.telemetry.avgRenderDurationMs ?? '—'} ms /{' '}
+                        {readiness.telemetry.avgUploadDurationMs ?? '—'} ms
+                      </div>
+                    </div>
+                    <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                      <div className="text-slate-500">Sukses / Gagal / Retry</div>
+                      <div className="font-mono font-semibold text-slate-900 dark:text-white mt-0.5">
+                        {readiness.telemetry.completedRenderCount} ok · {readiness.telemetry.renderFailureCount} gagal ·{' '}
+                        {readiness.telemetry.renderRetryCount} retry
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                      <div className="text-slate-500">Render Sukses Terakhir & Resource</div>
+                      <div className="font-mono font-semibold text-slate-900 dark:text-white mt-0.5">
+                        {readiness.telemetry.lastSuccessfulRenderAt
+                          ? new Date(readiness.telemetry.lastSuccessfulRenderAt).toLocaleString('id-ID')
+                          : 'Belum ada'}
+                        {readiness.runtimeResources && (
+                          <span className="block text-[11px] font-normal text-slate-500 mt-0.5">
+                            RSS {readiness.runtimeResources.memoryRssMb} MB · Heap {readiness.runtimeResources.heapUsedMb}/
+                            {readiness.runtimeResources.heapTotalMb} MB · {readiness.runtimeResources.cpuCount} vCPU · Load{' '}
+                            {readiness.runtimeResources.loadAvg1m}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                      <div className="text-slate-500">Error Render Terbaru</div>
+                      {readiness.telemetry.recentErrors && readiness.telemetry.recentErrors.length > 0 ? (
+                        <ul className="mt-1 space-y-1">
+                          {readiness.telemetry.recentErrors.slice(0, 3).map((errItem) => (
+                            <li
+                              key={`${errItem.jobId}-${errItem.updatedAt}`}
+                              className="text-[11px] font-mono text-red-700 dark:text-red-300 truncate"
+                            >
+                              {errItem.jobId.slice(0, 12)} [{errItem.errorCode || errItem.stage || 'ERROR'}]:{' '}
+                              {errItem.errorMessage || 'Gagal diproses'}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <div className="font-mono text-[11px] text-emerald-700 dark:text-emerald-400 mt-0.5">
+                          Tidak ada error render terbaru.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </section>
+          )}
         </div>
       )}
 

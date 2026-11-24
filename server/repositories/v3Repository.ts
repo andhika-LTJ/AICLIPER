@@ -60,7 +60,11 @@ export interface ObservabilityMetricsSummary {
 }
 
 export class V3Repository {
-  constructor(private readonly sqliteDb: KlipCastDatabase) {}
+  private readonly sqliteDb: KlipCastDatabase;
+
+  constructor(sqliteDb: KlipCastDatabase) {
+    this.sqliteDb = sqliteDb;
+  }
 
   private async ensurePgParents(params: {
     userUid: string;

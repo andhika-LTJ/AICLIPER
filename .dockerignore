@@ -1,0 +1,31 @@
+# Dependencies & build output
+node_modules
+dist
+.vite
+coverage
+
+# Local runtime state, SQLite databases, and temporary media
+data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+tmp/
+
+# Secrets & local environment files (NEVER bake into container images)
+.env
+.env.*
+!.env.example
+*service-account*.json
+*credentials*.json
+
+# Test artifacts, Playwright browser output & git/IDE metadata
+.git
+.github
+.playwright-cli
+.vscode
+.idea
+*.log
+**/*.test.ts
+**/*.test.tsx
+docs/

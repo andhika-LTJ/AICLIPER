@@ -19,6 +19,7 @@ export interface ManagedRenderJob {
   result?: Record<string, unknown>;
   error?: string;
   code?: string;
+  externalWorker?: boolean;
 }
 
 export interface CreateOrReuseRenderJobResult {
@@ -102,7 +103,8 @@ export class RenderJobManager {
   /**
    * Starts a new render job with per-user isolation & single-slot concurrency safety:
    * - If an identical job for the same user is already running and `forceRestart` is false, reuses it.
-   * - Cancels only THIS user's other running jobs (User B can never cancel User A's render!).
+   * - For local in-process jobs, cancels only THIS user's other local running jobs (User B can never cancel User A's render!).
+   * - Externally dispatched Cloud Tasks / Cloud Run Worker jobs are managed by the DB + worker lifecycle and are NOT preempted.
    */
   createOrReuse(params: {
     clipId: string;
@@ -113,6 +115,7 @@ export class RenderJobManager {
     initialStage: string;
     initialProgress?: number;
     forceRestart?: boolean;
+    externalWorker?: boolean;
   }): CreateOrReuseRenderJobResult {
     const now = Date.now();
     const userUid = params.userUid ?? 'system';
@@ -125,19 +128,35 @@ export class RenderJobManager {
           existing.userUid === userUid &&
           existing.dedupeKey === params.dedupeKey
         ) {
+          if (existing.externalWorker && this.db) {
+            const dbRow = this.db.getRenderJobById(existing.jobId);
+            if (dbRow && dbRow.status !== 'running') {
+              existing.status = dbRow.status;
+              continue;
+            }
+          }
           return { job: existing, reused: true, preemptedJobIds: [] };
         }
       }
     }
 
     const preemptedJobIds: string[] = [];
-    for (const existing of this.jobs.values()) {
-      if (existing.status === 'running' && existing.userUid === userUid) {
-        this.markCancelled(
-          existing,
-          'Dibatalkan otomatis karena permintaan render baru dimulai.'
-        );
-        preemptedJobIds.push(existing.jobId);
+    if (!params.externalWorker) {
+      for (const existing of this.jobs.values()) {
+        if (existing.status === 'running' && existing.userUid === userUid && !existing.externalWorker) {
+          if (this.db) {
+            const dbRow = this.db.getRenderJobById(existing.jobId);
+            if (dbRow && dbRow.status !== 'running') {
+              existing.status = dbRow.status;
+              continue;
+            }
+          }
+          this.markCancelled(
+            existing,
+            'Dibatalkan otomatis karena permintaan render baru dimulai.'
+          );
+          preemptedJobIds.push(existing.jobId);
+        }
       }
     }
 
@@ -156,6 +175,7 @@ export class RenderJobManager {
       createdAt: now,
       updatedAt: now,
       abortController: new AbortController(),
+      externalWorker: Boolean(params.externalWorker),
     };
     this.jobs.set(jobId, job);
     this.persist(job);

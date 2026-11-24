@@ -78,11 +78,18 @@ import {
   resolveBalancedRenderProfile,
   type BalancedRenderProfileSpec,
 } from './server/services/renderFingerprint.ts';
-import { enqueueCloudTask } from './server/services/cloudTasksService.ts';
+import { enqueueCloudTask, isCloudTasksConfigured } from './server/services/cloudTasksService.ts';
 import {
   dispatchCloudRunRenderJob,
   isCloudRunJobsConfigured,
+  type CloudRunDispatchDependencies,
 } from './server/services/cloudRunJobsService.ts';
+import {
+  createInternalDispatchRouter,
+} from './server/routes/internalDispatchRoutes.ts';
+import type { OidcVerifierConfig, VerifyIdTokenFn } from './server/services/oidcVerifier.ts';
+import { PgRenderJobStore } from './server/services/pgJobStore.ts';
+import { closePgPool } from './src/db/index.ts';
 import { finalizeRenderWorkerOutput } from './workers/renderWorker.ts';
 import { GoogleTokenVerificationError } from './server/googleAuthVerifier.ts';
 import {
@@ -128,6 +135,11 @@ export interface CreateAppOptions {
   dispatchCloudRunJobFn?: typeof dispatchCloudRunRenderJob;
   enqueueCloudTaskFn?: typeof enqueueCloudTask;
   requireExternalWorker?: boolean;
+  requireCloudTasksDispatch?: boolean;
+  oidcConfigOverride?: Partial<OidcVerifierConfig>;
+  verifyOidcIdTokenFn?: VerifyIdTokenFn;
+  cloudRunDeps?: CloudRunDispatchDependencies;
+  pgJobStore?: PgRenderJobStore;
 }
 
 function attachSignedVideoUrls(uid: string, clips: PodcastClip[]): PodcastClip[] {
@@ -1767,6 +1779,16 @@ export function createApp(options: CreateAppOptions = {}) {
     const dedupeKey = `${user.uid}:${clip.id}:${renderFingerprint}`;
     const initialStage = `Menyiapkan ${profileSpec.label}...`;
 
+    const pgJobStore = options.pgJobStore ?? new PgRenderJobStore();
+    const cloudQueueDispatchMode = Boolean(
+      options.requireCloudTasksDispatch ||
+        process.env.CLOUD_RENDER_DISPATCH_ENABLED === 'true' ||
+        (process.env.NODE_ENV === 'production' && isCloudTasksConfigured())
+    );
+    const externalWorkerRequired = Boolean(
+      options.requireExternalWorker || isCloudRunJobsConfigured() || cloudQueueDispatchMode
+    );
+
     const { job, reused } = renderJobManager.createOrReuse({
       clipId: clip.id,
       userUid: user.uid,
@@ -1776,62 +1798,213 @@ export function createApp(options: CreateAppOptions = {}) {
       initialStage,
       initialProgress: 8,
       forceRestart: Boolean(body.forceRestart),
+      externalWorker: externalWorkerRequired,
     });
 
-    let taskDispatch: { backend: string } | null = null;
+    let taskDispatch: { backend: string; taskName?: string; queueLatencyMs?: number } | null = null;
     let jobDispatch: { backend: string; executionName?: string } | null = null;
 
     if (!reused) {
-      taskDispatch = await enqueueCloudTaskExec({
-        queue: 'video-render-dispatch',
-        idempotencyKey: `${job.jobId}:${renderFingerprint}`,
-        targetPath: '/workers/render/execute',
-        payload: {
-          jobId: job.jobId,
-          userUid: user.uid,
-          clipId: clip.id,
-          renderProfile: profileSpec.id,
-          renderFingerprint,
-        },
-      }).catch(() => null);
+      const workerJobPayload: Record<string, unknown> = {
+        renderProfile: profileSpec.id,
+        sourceFingerprint,
+        renderFingerprint,
+        layout: resolvedLayout,
+        quality: resolvedQuality,
+        enableEmotionEffects: resolvedEmotionEffects,
+        enableAiIntro: resolvedAiIntro,
+        overlayStyle: resolvedOverlayStyle ?? null,
+        cameraSettings: resolvedCameraSettings ?? null,
+        introTemplateConfig: resolvedIntroConfig ?? null,
+      };
 
-      const externalWorkerRequired = Boolean(
-        options.requireExternalWorker || isCloudRunJobsConfigured()
-      );
-      try {
-        jobDispatch = await dispatchCloudRunJobExec({
-          renderJobId: job.jobId,
-          userUid: user.uid,
-          clipId: clip.id,
-          renderProfile: profileSpec.id,
-          renderFingerprint,
-        });
-      } catch (dispatchErr) {
-        if (externalWorkerRequired) {
-          const workerErrMsg = sanitizePublicErrorMessage(
-            dispatchErr,
-            'Layanan worker render sedang tidak tersedia. Coba beberapa saat lagi.'
-          );
-          renderJobManager.fail(job.jobId, workerErrMsg, 'WORKER_UNAVAILABLE');
+      db.upsertRenderJobCloudState({
+        jobId: job.jobId,
+        userUid: user.uid,
+        clipId: clip.id,
+        lifecycleStatus: 'queued',
+        renderProfile: profileSpec.id,
+        sourceFingerprint,
+        renderFingerprint,
+        payloadJson: workerJobPayload,
+      });
+
+      if (pgJobStore.isAvailable()) {
+        await pgJobStore
+          .createOrUpsertRenderJob({
+            id: job.jobId,
+            userUid: user.uid,
+            projectId: episode.id,
+            clipId: clip.id,
+            status: 'queued',
+            stage: initialStage,
+            progress: 8,
+            renderProfile: profileSpec.id,
+            sourceFingerprint,
+            renderFingerprint,
+            payloadJson: workerJobPayload,
+          })
+          .catch(() => undefined);
+      }
+
+      if (cloudQueueDispatchMode) {
+        // Production Cloud Architecture: API -> DB -> Cloud Tasks (OIDC) -> Dispatcher -> Cloud Run Jobs -> Worker
+        const reqCorrelationRaw = String(req.headers['x-correlation-id'] ?? '').trim();
+        const correlationId =
+          reqCorrelationRaw.replace(/[^a-zA-Z0-9._:-]/g, '').slice(0, 128) || `corr_${job.jobId}`;
+        try {
+          taskDispatch = await enqueueCloudTaskExec({
+            queue: 'video_render',
+            idempotencyKey: `${job.jobId}:${renderFingerprint}`,
+            correlationId,
+            targetPath: '/api/internal/dispatch/render',
+            dispatchDeadlineSec: 30,
+            payload: {
+              jobId: job.jobId,
+              userUid: user.uid,
+              clipId: clip.id,
+              renderProfile: profileSpec.id,
+              renderFingerprint,
+              sourceFingerprint,
+              correlationId,
+            },
+          });
+          if (taskDispatch?.taskName) {
+            db.upsertRenderJobCloudState({
+              jobId: job.jobId,
+              userUid: user.uid,
+              clipId: clip.id,
+              lifecycleStatus: 'queued',
+              cloudTaskName: taskDispatch.taskName,
+            });
+          }
+          await v3Repo.recordPerformanceMetric({
+            userUid: user.uid,
+            category: 'render',
+            operation: 'queue_enqueue',
+            durationMs: taskDispatch?.queueLatencyMs ?? 0,
+            success: true,
+            cacheHit: false,
+            metadata: {
+              jobId: job.jobId,
+              correlationId,
+              backend: taskDispatch?.backend ?? 'cloud_tasks',
+            },
+          });
           await v3Repo.recordJobEvent({
             jobId: job.jobId,
             jobType: 'render',
             userUid: user.uid,
-            stage: 'dispatch_failed',
+            stage: 'queued',
+            status: 'completed',
+            message: 'Render job dimasukkan ke Google Cloud Tasks (OIDC dispatcher).',
+            durationMs: taskDispatch?.queueLatencyMs ?? 0,
+            metadata: {
+              correlationId,
+              queueBackend: taskDispatch?.backend,
+              taskName: taskDispatch?.taskName,
+              renderProfile: profileSpec.id,
+              renderFingerprint,
+            },
+          });
+        } catch (queueErr) {
+          const queueErrMsg = sanitizePublicErrorMessage(
+            queueErr,
+            'Antrean Cloud Tasks sedang tidak tersedia. Render tidak dapat dijalankan.'
+          );
+          renderJobManager.fail(job.jobId, queueErrMsg, 'QUEUE_UNAVAILABLE');
+          db.upsertRenderJobCloudState({
+            jobId: job.jobId,
+            userUid: user.uid,
+            clipId: clip.id,
+            lifecycleStatus: 'failed',
+            failedStage: 'queued',
+          });
+          await v3Repo.recordJobEvent({
+            jobId: job.jobId,
+            jobType: 'render',
+            userUid: user.uid,
+            stage: 'queued',
             status: 'failed',
-            message: workerErrMsg,
+            message: queueErrMsg,
             metadata: { renderProfile: profileSpec.id, renderFingerprint },
           });
           res.status(503).json({
-            code: 'WORKER_UNAVAILABLE',
-            error: workerErrMsg,
+            code: 'QUEUE_UNAVAILABLE',
+            error: queueErrMsg,
             jobId: job.jobId,
           });
           return;
         }
-        jobDispatch = null;
+      } else {
+        // Non-production / direct Cloud Run Jobs or local async mode (preserves Fase 0A compatibility)
+        taskDispatch = await enqueueCloudTaskExec({
+          queue: 'video_render',
+          idempotencyKey: `${job.jobId}:${renderFingerprint}`,
+          targetPath: '/api/internal/dispatch/render',
+          payload: {
+            jobId: job.jobId,
+            userUid: user.uid,
+            clipId: clip.id,
+            renderProfile: profileSpec.id,
+            renderFingerprint,
+            sourceFingerprint,
+          },
+        }).catch(() => null);
+
+        try {
+          jobDispatch = await dispatchCloudRunJobExec(
+            {
+              renderJobId: job.jobId,
+              userUid: user.uid,
+              clipId: clip.id,
+              renderProfile: profileSpec.id,
+              renderFingerprint,
+              sourceFingerprint,
+            },
+            options.cloudRunDeps
+          );
+          if (jobDispatch?.executionName) {
+            db.attachCloudRunExecution(job.jobId, jobDispatch.executionName, taskDispatch?.taskName);
+          }
+        } catch (dispatchErr) {
+          if (externalWorkerRequired) {
+            const workerErrMsg = sanitizePublicErrorMessage(
+              dispatchErr,
+              'Layanan worker render sedang tidak tersedia. Coba beberapa saat lagi.'
+            );
+            renderJobManager.fail(job.jobId, workerErrMsg, 'WORKER_UNAVAILABLE');
+            db.upsertRenderJobCloudState({
+              jobId: job.jobId,
+              userUid: user.uid,
+              clipId: clip.id,
+              lifecycleStatus: 'failed',
+              failedStage: 'dispatching',
+            });
+            await v3Repo.recordJobEvent({
+              jobId: job.jobId,
+              jobType: 'render',
+              userUid: user.uid,
+              stage: 'dispatch_failed',
+              status: 'failed',
+              message: workerErrMsg,
+              metadata: { renderProfile: profileSpec.id, renderFingerprint },
+            });
+            res.status(503).json({
+              code: 'WORKER_UNAVAILABLE',
+              error: workerErrMsg,
+              jobId: job.jobId,
+            });
+            return;
+          }
+          jobDispatch = null;
+        }
       }
     }
+
+    const delegatedToCloudWorker = Boolean(
+      cloudQueueDispatchMode || jobDispatch?.backend === 'cloud_run_jobs'
+    );
 
     const sseToken = createSignedStreamToken({
       uid: user.uid,
@@ -1843,19 +2016,26 @@ export function createApp(options: CreateAppOptions = {}) {
     res.status(202).json({
       jobId: job.jobId,
       streamToken: sseToken,
-      status: job.status,
-      stage: job.stage,
+      status: delegatedToCloudWorker ? 'queued' : job.status,
+      stage: delegatedToCloudWorker ? 'Antrean Cloud Tasks / Cloud Run Jobs' : job.stage,
       progress: job.progress,
       quality: resolvedQuality,
       renderProfile: profileSpec.id,
       renderFingerprint,
       sourceFingerprint,
+      executionMode: cloudQueueDispatchMode
+        ? 'cloud_tasks_dispatcher'
+        : jobDispatch?.backend === 'cloud_run_jobs'
+          ? 'cloud_run_jobs'
+          : 'local_async_worker',
+      cloudTaskName: taskDispatch?.taskName ?? null,
+      executionName: jobDispatch?.executionName ?? null,
       isUltraHd: resolvedQuality === '4k',
       targetWidth: profileSpec.id === 'fast_preview' && resolvedLayout !== 'full_16_9_focus' ? 720 : targetDims.outW,
       targetHeight: profileSpec.id === 'fast_preview' && resolvedLayout !== 'full_16_9_focus' ? 1280 : targetDims.outH,
     });
 
-    if (reused) return;
+    if (reused || delegatedToCloudWorker) return;
 
     const jobSignal = job.abortController.signal;
     const renderStartedAt = Date.now();
@@ -2772,6 +2952,20 @@ export function createApp(options: CreateAppOptions = {}) {
     })
   );
 
+  // Authenticated Cloud Tasks -> Cloud Run Jobs Internal Render Dispatcher
+  const internalDispatchRouter = createInternalDispatchRouter({
+    db,
+    v3Repo,
+    pgJobStore: options.pgJobStore,
+    oidcConfigOverride: options.oidcConfigOverride,
+    verifyIdTokenFn: options.verifyOidcIdTokenFn,
+    dispatchCloudRunJobFn: dispatchCloudRunJobExec,
+    cloudRunDeps: options.cloudRunDeps,
+    strictProduction: options.requireExternalWorker,
+  });
+  app.use('/api/internal/dispatch', internalDispatchRouter);
+  app.use('/workers/render', internalDispatchRouter);
+
   // Final sanitized Express error handler (never leaks stack traces)
   app.use(
     (
@@ -2809,9 +3003,18 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  const httpServer = app.listen(PORT, '0.0.0.0', () => {
     console.log(`KlipCast server listening on http://localhost:${PORT}`);
   });
+
+  const gracefulShutdown = (signal: string) => {
+    console.log(`[Server] Received ${signal}, shutting down gracefully...`);
+    httpServer.close(() => {
+      void closePgPool().finally(() => process.exit(0));
+    });
+  };
+  process.once('SIGTERM', () => gracefulShutdown('SIGTERM'));
+  process.once('SIGINT', () => gracefulShutdown('SIGINT'));
 }
 
 const currentFilePath = fileURLToPath(import.meta.url);

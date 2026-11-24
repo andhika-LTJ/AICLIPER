@@ -1,0 +1,994 @@
+# MASTER PROMPT AICLIPER — FASE 0B
+## Production Infrastructure Readiness, Cloud Worker & Database Migration
+
+Anda bertindak sebagai Senior Software Architect, Senior Backend Engineer, Google Cloud Infrastructure Engineer, Database Migration Specialist, dan DevOps Engineer.
+
+Tugas Anda adalah melanjutkan pengembangan repository AICLIPER berdasarkan kondisi kode TERBARU pada GitHub branch `main`.
+
+Fokus pekerjaan adalah menyelesaikan Fase 0B: Production Infrastructure Readiness.
+
+**Jangan membangun ulang aplikasi. Jangan mengulang pekerjaan Fase 0A yang sudah selesai. Jangan menghapus atau merusak fitur yang sudah berjalan.**
+
+---
+
+# 1. KONTEKS DAN KONDISI REPOSITORY
+
+Repository:
+`andhika-LTJ/AICLIPER`
+
+Branch:
+`main`
+
+AICLIPER menggunakan arsitektur React, Vite, TypeScript, Express, Firebase Authentication, Gemini API, FFmpeg, dan integrasi YouTube.
+
+Hasil Fase 0A telah dilaporkan selesai dengan:
+- Build berhasil.
+- TypeScript tanpa error.
+- 105/105 unit dan integration tests berhasil.
+- Browser verification desktop dan mobile berhasil.
+- Tidak ada console error pada pengujian yang dilaporkan.
+- Perbaikan pipeline render 1080p dan 4K telah dilakukan.
+- Render fingerprint dan quality profile telah diperbaiki.
+- Validasi output FFmpeg dan FFprobe telah ditambahkan.
+- Perbaikan klasifikasi HTTP 403 telah dilakukan.
+- Perbaikan aturan paket dan kuota telah dilakukan.
+
+Hasil pengujian tersebut harus dipertahankan.
+
+## Temuan awal yang perlu diverifikasi ulang
+
+Pemeriksaan repository sebelumnya menemukan beberapa hal berikut:
+
+1. `server/services/cloudRunJobsService.ts`
+   - Masih menggunakan `GCP_ACCESS_TOKEN` sebagai sumber Bearer token.
+   - Perlu menggunakan Google Application Default Credentials (ADC).
+
+2. `workers/renderWorker.ts`
+   - Sudah memiliki fungsi `finalizeRenderWorkerOutput()`.
+   - Entrypoint Cloud Run Job tampak baru mencatat `cloud_run_job_boot`.
+   - Belum terlihat menjalankan pipeline render mandiri.
+
+3. `server/db.ts`
+   - Masih mengimpor `node:sqlite`.
+   - `getDatabase()` masih membuat instance `KlipCastDatabase` berbasis SQLite.
+   - Perlu implementasi runtime PostgreSQL sesuai arsitektur target.
+
+4. `server/services/gcsStorageService.ts`
+   - Adapter Google Cloud Storage sudah tersedia.
+   - Masih memiliki local filesystem fallback.
+   - Perlu memastikan produksi menggunakan GCS dan tidak diam-diam menyimpan data permanen secara lokal.
+
+5. `server/services/cloudTasksService.ts`
+   - Adapter Google Cloud Tasks sudah tersedia.
+   - Sudah memiliki deterministic task ID dan idempotency.
+   - OIDC token masih opsional.
+   - Perlu memastikan autentikasi Cloud Tasks ke endpoint dispatcher benar-benar aman.
+
+6. `infra/cloud-run-render-job.yaml`
+   - Manifest Cloud Run Jobs sudah tersedia.
+   - Masih berisi placeholder konfigurasi infrastruktur.
+   - Perlu disesuaikan dengan deployment produksi.
+
+Temuan ini merupakan titik awal, bukan asumsi mutlak. Periksa kode terbaru sebelum mengubah apa pun. Jika sebagian sudah diperbaiki, jangan mengulangnya.
+
+---
+
+# 2. KEPUTUSAN ARSITEKTUR YANG WAJIB DIPERTAHANKAN
+
+Gunakan keputusan arsitektur AICLIPER berikut:
+
+| Komponen | Keputusan |
+|---|---|
+| Backend | Existing Express API |
+| Database produksi | PostgreSQL / Google Cloud SQL |
+| Object storage | Google Cloud Storage |
+| Job queue | Google Cloud Tasks |
+| Render worker | Google Cloud Run Jobs |
+| Render strategy | Balanced |
+| Migration | Staged migration |
+| Authentication | Existing Firebase Authentication |
+| AI provider | Existing Gemini integration |
+| Video processing | Existing FFmpeg / FFprobe |
+
+Arsitektur yang dituju:
+
+Application Web / Desktop
+→ Existing Express API
+→ PostgreSQL + GCS
+→ Google Cloud Tasks
+→ Authenticated Dispatcher
+→ Cloud Run Jobs
+→ FFmpeg Rendering
+→ GCS Output
+→ PostgreSQL Job Status
+
+Jangan mengganti Cloud Tasks dengan Redis, BullMQ, RabbitMQ, atau sistem queue lain.
+
+Jangan mengganti PostgreSQL dengan Firestore.
+
+Jangan menggunakan filesystem Cloud Run sebagai permanent storage.
+
+---
+
+# 3. ATURAN MUTLAK: JANGAN MERUSAK SISTEM YANG SUDAH BERJALAN
+
+Hal-hal berikut tidak boleh diubah atau dibangun ulang:
+
+1. Firebase Authentication.
+2. Google Login.
+3. Existing OAuth integration.
+4. Existing YouTube OAuth.
+5. Existing YouTube upload dan publishing flow.
+6. Existing subscription dan billing logic.
+7. Existing admin role dan authorization.
+8. Existing AI analysis dan Gemini integration.
+9. Existing clip discovery.
+10. Existing video editing dan render UI.
+11. Existing render quality 1080p dan 4K.
+12. Existing render fingerprint.
+13. Existing cache logic yang telah diperbaiki.
+14. Existing user quota dan paket.
+15. Existing dashboard dan UI.
+
+Jangan mengganti identitas, struktur, atau alur autentikasi pengguna.
+
+Jangan membuat login provider baru.
+
+Jangan menghapus tabel, data, atau migration lama tanpa validasi dan persetujuan eksplisit.
+
+Jangan mengubah desain UI kecuali benar-benar dibutuhkan untuk menampilkan status infrastruktur yang sudah tersedia.
+
+---
+
+# 4. TAHAP PERTAMA — REPOSITORY AUDIT
+
+Sebelum menulis kode:
+
+1. Periksa seluruh struktur repository.
+2. Periksa package.json dan seluruh dependency.
+3. Periksa database abstraction yang digunakan.
+4. Periksa seluruh pemanggilan getDatabase().
+5. Periksa seluruh penggunaan SQL query dan transaksi.
+6. Periksa semua fungsi penyimpanan file.
+7. Periksa semua endpoint Cloud Tasks.
+8. Periksa Cloud Run Jobs dispatcher.
+9. Periksa seluruh render lifecycle.
+10. Periksa konfigurasi Docker dan deployment.
+11. Periksa seluruh unit dan integration tests.
+12. Periksa environment variables.
+13. Periksa konfigurasi Firebase dan YouTube integration tanpa mengubahnya.
+
+Buat dependency map untuk:
+- Database.
+- Storage.
+- Queue.
+- Dispatcher.
+- Render worker.
+- Authentication.
+- Job lifecycle.
+
+Identifikasi seluruh modul yang bergantung pada SQLite.
+
+Identifikasi seluruh modul yang masih menggunakan local filesystem.
+
+Identifikasi seluruh fungsi yang belum dapat berjalan pada lingkungan Cloud Run.
+
+Jangan mengasumsikan bahwa hanya file yang disebutkan dalam prompt ini yang perlu diperbaiki.
+
+Setelah audit, buat daftar perubahan yang benar-benar diperlukan.
+
+Kemudian lanjutkan implementasi tanpa menunggu konfirmasi, selama perubahan tetap berada dalam batas pekerjaan Fase 0B dan tidak mengandung operasi destruktif.
+
+---
+
+# 5. TAHAP KEDUA — GOOGLE APPLICATION DEFAULT CREDENTIALS
+
+Tujuan: menghilangkan ketergantungan pada static GCP_ACCESS_TOKEN.
+
+Periksa:
+`server/services/cloudRunJobsService.ts`
+
+Implementasikan autentikasi Google Cloud menggunakan mekanisme resmi Google Auth dan Application Default Credentials.
+
+Persyaratan:
+
+1. Gunakan Google Auth Library yang kompatibel dengan dependency proyek.
+2. Gunakan ADC pada Cloud Run.
+3. Gunakan Metadata Server melalui mekanisme ADC saat berjalan di Google Cloud.
+4. Gunakan service account identity yang dilekatkan pada Cloud Run service.
+5. Jangan menyimpan access token permanen dalam environment variable.
+6. Jangan memasukkan service account JSON key ke source code.
+7. Jangan menyimpan Google Cloud credentials dalam desktop app.
+8. Jangan mencetak token ke log.
+9. Gunakan OAuth scope yang sesuai dengan API yang dipanggil.
+10. Pastikan token diperbarui secara otomatis oleh library.
+
+Cloud Run API request harus menggunakan Bearer token yang diperoleh dari ADC.
+
+Buat mekanisme error handling yang membedakan:
+- Authentication failure.
+- Permission denied.
+- Invalid project atau region.
+- Job resource tidak ditemukan.
+- Quota exceeded.
+- API unavailable.
+- Network timeout.
+
+Jika ADC tidak tersedia pada production, sistem harus gagal secara eksplisit dan tidak berpura-pura berhasil dispatch.
+
+Local development boleh menggunakan mekanisme ADC yang resmi melalui gcloud CLI atau konfigurasi Google Auth standar.
+
+Jangan mengandalkan GCP_ACCESS_TOKEN sebagai mekanisme autentikasi produksi.
+
+---
+
+# 6. TAHAP KETIGA — RENDER WORKER MANDIRI
+
+Prioritas tertinggi Fase 0B.
+
+Periksa:
+`workers/renderWorker.ts`
+`server/videoClipper.ts`
+`server/services/cloudRunJobsService.ts`
+`server/services/gcsStorageService.ts`
+`server/db.ts`
+
+Saat ini worker memiliki fungsi finalisasi output, tetapi entrypoint harus dipastikan menjalankan proses render sebenarnya.
+
+Implementasikan standalone worker yang dapat dijalankan oleh Cloud Run Jobs.
+
+## 6.1 Worker lifecycle
+
+Worker harus melakukan:
+
+1. Membaca `AICLIPER_RENDER_JOB_ID`.
+2. Memvalidasi job ID.
+3. Mengambil informasi job dari PostgreSQL.
+4. Memvalidasi ownership dan status job.
+5. Mengambil metadata clip dan source video.
+6. Mengambil source asset dari GCS jika belum tersedia secara lokal.
+7. Menyiapkan temporary working directory.
+8. Memvalidasi render profile.
+9. Memanggil pipeline render FFmpeg yang sudah ada.
+10. Memvalidasi hasil dengan FFprobe.
+11. Mengunggah hasil render ke GCS.
+12. Memperbarui metadata render asset.
+13. Memperbarui status job menjadi completed.
+14. Mencatat performance metrics dan job events.
+15. Membersihkan temporary files setelah proses selesai.
+
+Gunakan kembali pipeline render yang sudah ada.
+
+Jangan membuat pipeline FFmpeg kedua yang menduplikasi implementasi `renderClipMp4()` atau fungsi render yang sudah digunakan oleh aplikasi.
+
+## 6.2 Job environment
+
+Gunakan environment variables yang diperlukan, termasuk:
+
+- `AICLIPER_RENDER_JOB_ID`
+- `AICLIPER_USER_UID`
+- `AICLIPER_CLIP_ID`
+- `AICLIPER_RENDER_PROFILE`
+- `AICLIPER_RENDER_FINGERPRINT`
+- `GCP_PROJECT_ID`
+- `GCP_REGION`
+- `GCS_BUCKET_NAME`
+- konfigurasi koneksi PostgreSQL yang aman.
+
+Namun, identitas pengguna dan data job harus tetap diverifikasi terhadap database. Jangan mempercayai environment variables sebagai satu-satunya sumber otorisasi.
+
+## 6.3 Job status
+
+Gunakan status lifecycle yang konsisten:
+
+- queued
+- dispatching
+- running
+- uploading
+- completed
+- failed
+- cancelled
+
+Sesuaikan dengan enum/status yang sudah ada. Jangan membuat status duplikat jika sistem sudah memiliki standar yang kompatibel.
+
+Setiap perubahan status harus tercatat.
+
+Jika job gagal:
+- Simpan error code.
+- Simpan error message yang aman.
+- Simpan stage kegagalan.
+- Simpan timestamp.
+- Catat retry attempt.
+- Jangan menghapus informasi kegagalan sebelumnya.
+
+## 6.4 Idempotency
+
+Worker wajib aman terhadap eksekusi ulang.
+
+Jika job sudah completed dan output valid:
+- Jangan melakukan render ulang tanpa alasan.
+- Gunakan hasil yang sudah tersedia jika fingerprint sesuai.
+
+Jika job sedang berjalan:
+- Cegah eksekusi paralel yang tidak disengaja.
+- Gunakan mekanisme claim/lock yang aman di PostgreSQL.
+
+Jika Cloud Run melakukan retry:
+- Worker harus memeriksa status terakhir.
+- Jangan membuat duplikasi render asset.
+- Jangan menghitung penggunaan kuota dua kali.
+- Jangan membuat job completed yang sebenarnya gagal upload.
+
+## 6.5 Render output
+
+Pertahankan:
+- Balanced 1080p.
+- Balanced 4K.
+- Render fingerprint.
+- Source fingerprint.
+- No-upscaling policy.
+- Existing audio synchronization.
+- Existing FFmpeg filters.
+- Existing clip layout.
+- Existing caption dan intro rendering.
+
+Validasi hasil menggunakan FFprobe:
+- Width.
+- Height.
+- Duration.
+- Video codec.
+- Audio stream.
+- File size.
+- Output integrity.
+
+Pastikan resolusi aktual mengikuti resolusi sumber dan kebijakan render yang sudah diterapkan.
+
+---
+
+# 7. TAHAP KEEMPAT — CLOUD TASKS DAN DISPATCHER
+
+Periksa:
+`server/services/cloudTasksService.ts`
+`server/services/cloudRunJobsService.ts`
+`server.ts`
+
+Pertahankan Google Cloud Tasks sebagai sistem antrean.
+
+Implementasikan flow:
+
+Express API
+→ Create render job di PostgreSQL
+→ Enqueue Cloud Task
+→ Authenticated dispatcher
+→ Cloud Run Jobs API
+→ Simpan execution reference
+→ Render worker berjalan
+
+## 7.1 Cloud Tasks
+
+Persyaratan:
+
+1. Gunakan CloudTasksClient.
+2. Gunakan ADC.
+3. Gunakan deterministic task ID.
+4. Pertahankan idempotency key.
+5. Pertahankan queue yang sudah ada.
+6. Gunakan OIDC token untuk autentikasi HTTP target.
+7. Tetapkan service account khusus untuk Cloud Tasks invocation.
+8. Gunakan audience yang sesuai dengan URL target.
+9. Validasi request pada endpoint dispatcher.
+10. Jangan menggunakan endpoint publik tanpa autentikasi.
+
+## 7.2 Dispatcher
+
+Dispatcher bertugas menjalankan Cloud Run Jobs API.
+
+Dispatcher harus:
+
+- Memvalidasi request.
+- Memastikan job benar-benar ada di PostgreSQL.
+- Memastikan job belum completed atau cancelled.
+- Memverifikasi idempotency.
+- Memanggil Cloud Run Jobs API menggunakan ADC.
+- Menyimpan execution name.
+- Mencatat status dispatch.
+- Menangani kegagalan dispatch.
+
+Jangan menganggap task berhasil hanya karena HTTP request berhasil dikirim jika Cloud Run Job gagal dibuat.
+
+Pastikan retry Cloud Tasks tidak menyebabkan eksekusi render ganda.
+
+## 7.3 Fallback
+
+Local fallback hanya boleh digunakan untuk development dan test.
+
+Pada production:
+- Jika Cloud Tasks tidak tersedia, tampilkan kegagalan secara eksplisit.
+- Jika Cloud Run Jobs tidak tersedia, tampilkan kegagalan secara eksplisit.
+- Jangan diam-diam menjalankan render berat di Express API.
+- Jangan menandai job completed jika hanya berhasil masuk antrean.
+
+---
+
+# 8. TAHAP KELIMA — POSTGRESQL / CLOUD SQL
+
+Target database produksi adalah PostgreSQL pada Google Cloud SQL.
+
+Periksa seluruh implementasi:
+`server/db.ts`
+Seluruh modul yang menggunakan `KlipCastDatabase`.
+Seluruh repository dan service database.
+
+Jangan sekadar menambahkan package `pg` dan menyatakan migrasi selesai.
+
+Implementasikan database abstraction yang benar-benar dapat menggunakan PostgreSQL sebagai runtime production.
+
+## 8.1 Database abstraction
+
+Pertahankan interface dan kontrak fungsi yang sudah digunakan aplikasi selama memungkinkan.
+
+Jika terdapat kebutuhan perubahan query:
+- Lakukan secara sistematis.
+- Pertahankan nama fungsi yang digunakan modul lain jika memungkinkan.
+- Hindari perubahan besar yang tidak relevan.
+- Tambahkan test untuk kompatibilitas.
+
+Perhatikan perbedaan SQLite dan PostgreSQL:
+- Placeholder parameter.
+- JSON handling.
+- Boolean.
+- Timestamp.
+- Autoincrement/sequence.
+- Conflict handling.
+- Returning.
+- Transaction.
+- Foreign key.
+- Index.
+- SQL dialect.
+- Concurrency.
+
+Gunakan connection pooling yang aman.
+
+Gunakan parameterized queries.
+
+Jangan membangun SQL menggunakan interpolasi input pengguna.
+
+## 8.2 Cloud SQL
+
+Dukung koneksi Cloud SQL menggunakan konfigurasi produksi yang sesuai.
+
+Pertimbangkan:
+- Cloud SQL Connector atau koneksi socket yang resmi.
+- IAM database authentication jika memang dikonfigurasi dan diuji.
+- TLS jika menggunakan koneksi TCP.
+- Connection pool limits.
+- Connection timeout.
+- Query timeout.
+- Graceful shutdown.
+- Health check.
+
+Jangan menyimpan password database di source code.
+
+Gunakan Secret Manager atau mekanisme secret injection yang sesuai.
+
+## 8.3 Migration staged
+
+Jangan menghapus SQLite.
+
+Implementasikan proses migrasi bertahap:
+
+1. Backup SQLite.
+2. Buat PostgreSQL schema.
+3. Jalankan migration.
+4. Import data.
+5. Verifikasi jumlah record.
+6. Verifikasi relasi.
+7. Verifikasi ownership antar-user.
+8. Verifikasi data JSON.
+9. Verifikasi timestamps.
+10. Jalankan integration tests.
+11. Jalankan shadow/read comparison bila sesuai.
+12. Baru aktifkan PostgreSQL sebagai runtime production setelah hasil valid.
+
+Sediakan:
+- Migration version.
+- Migration logs.
+- Backup reference.
+- Import report.
+- Validation report.
+- Rollback procedure.
+
+Jangan menghapus data lama sebelum proses migrasi dinyatakan valid.
+
+Jangan melakukan dual-write tanpa desain konsistensi dan recovery yang jelas.
+
+Jangan mengubah Firebase Authentication ketika melakukan migrasi database.
+
+---
+
+# 9. TAHAP KEENAM — GOOGLE CLOUD STORAGE
+
+Pertahankan:
+`server/services/gcsStorageService.ts`
+
+Gunakan Google Cloud Storage sebagai permanent object storage.
+
+Pastikan:
+- Source videos disimpan di GCS.
+- Render outputs disimpan di GCS.
+- Thumbnail disimpan di GCS.
+- Intro assets disimpan di GCS.
+- File lain yang harus bertahan setelah instance berhenti disimpan di GCS.
+
+Gunakan struktur object key yang mengisolasi pengguna:
+
+`users/{userUid}/projects/{projectId}/{category}/{filename}`
+
+Pastikan:
+1. User tidak dapat membaca file user lain.
+2. File download melalui signed URL yang memiliki masa berlaku.
+3. Signed URL tidak dapat diterbitkan tanpa authorization.
+4. Object key divalidasi.
+5. File upload memiliki content type yang sesuai.
+6. Ukuran file divalidasi.
+7. Penghapusan file mengikuti authorization dan ownership.
+8. GCS error ditangani dengan baik.
+9. Upload besar mendukung resumable upload jika diperlukan.
+10. Tidak ada permanent asset yang hanya tersimpan di filesystem Cloud Run.
+
+Temporary files untuk FFmpeg boleh berada di `/tmp` atau working directory sementara.
+
+Namun, temporary files harus:
+- Dibersihkan setelah selesai.
+- Tidak dianggap sebagai permanent storage.
+- Dapat diunduh ulang dari GCS jika worker harus melakukan retry.
+
+Pada production, jika `GCS_BUCKET_NAME` tidak tersedia, sistem harus memberikan error konfigurasi yang jelas.
+
+Jangan diam-diam beralih ke local filesystem fallback.
+
+Local fallback tetap diperbolehkan untuk development/test.
+
+---
+
+# 10. TAHAP KETUJUH — CLOUD RUN JOB DEPLOYMENT
+
+Periksa dan perbaiki:
+
+`infra/cloud-run-render-job.yaml`
+
+Buat konfigurasi deployment yang siap disesuaikan dengan project Google Cloud sebenarnya.
+
+Jangan memasukkan placeholder seolah-olah deployment sudah siap produksi.
+
+Perhatikan:
+- Project ID.
+- Region.
+- Container image.
+- CPU.
+- Memory.
+- Timeout.
+- Maximum retries.
+- Parallelism.
+- Task count.
+- Service account.
+- Cloud SQL connection.
+- GCS access.
+- Secret Manager.
+- Environment variables.
+- Network access.
+
+Buat Dockerfile khusus worker jika belum tersedia dan benar-benar diperlukan.
+
+Pastikan image berisi:
+- Node runtime.
+- Dependency production.
+- FFmpeg.
+- FFprobe.
+- Font yang dibutuhkan subtitle.
+- Binary atau dependency lain yang diperlukan pipeline render.
+
+Pastikan worker dapat dijalankan secara mandiri tanpa Express API.
+
+Jangan menyalin seluruh secret aplikasi ke worker.
+
+Berikan IAM permission minimum sesuai tugas.
+
+Pisahkan identitas:
+- Express API service account.
+- Cloud Tasks invocation service account.
+- Cloud Run Jobs execution service account.
+
+Jangan memberikan Owner atau Editor role jika role lebih sempit sudah cukup.
+
+---
+
+# 11. TAHAP KEDELAPAN — MONITORING DAN ERROR HANDLING
+
+Implementasikan observability yang konsisten.
+
+Setiap render job harus memiliki:
+- renderJobId.
+- userUid.
+- clipId.
+- executionName.
+- renderProfile.
+- renderFingerprint.
+- sourceFingerprint.
+- queueTaskName.
+- stage.
+- startedAt.
+- completedAt.
+- durationMs.
+- retryCount.
+- errorCode.
+- errorMessage.
+
+Tambahkan structured logging.
+
+Jangan mencatat:
+- Access token.
+- Password.
+- API key.
+- Firebase token.
+- Private credentials.
+- Sensitive user data yang tidak diperlukan.
+
+Pantau:
+- Queue latency.
+- Dispatch latency.
+- Worker startup time.
+- Render duration.
+- Upload duration.
+- Total job duration.
+- Failure rate.
+- Retry rate.
+- GCS error.
+- Database connection errors.
+- FFmpeg failures.
+
+Jangan membuat dashboard metrik dengan angka fiktif.
+
+Metrik harus berasal dari event dan data aktual.
+
+---
+
+# 12. TAHAP KESEMBILAN — TESTING WAJIB
+
+Pertahankan seluruh test yang sudah lulus pada Fase 0A.
+
+Tambahkan test untuk Fase 0B.
+
+## 12.1 Authentication dan cloud services
+
+- ADC available.
+- ADC unavailable.
+- Token refresh.
+- Permission denied.
+- Cloud Run API unavailable.
+- GCS unavailable.
+- Cloud Tasks unavailable.
+- OIDC invalid.
+- OIDC audience mismatch.
+
+## 12.2 Render worker
+
+- Valid render job.
+- Missing render job.
+- Invalid user.
+- Invalid clip.
+- Missing source asset.
+- GCS download failure.
+- FFmpeg failure.
+- FFprobe validation failure.
+- GCS upload failure.
+- Database update failure.
+- Worker retry.
+- Duplicate execution.
+- Already completed job.
+- Cancelled job.
+
+## 12.3 PostgreSQL
+
+- Connection.
+- Transaction.
+- Rollback.
+- Concurrent job updates.
+- Ownership isolation.
+- Migration.
+- Data integrity.
+- JSON persistence.
+- Query parameterization.
+- Connection pool behavior.
+
+## 12.4 GCS
+
+- Upload.
+- Download.
+- Signed URL.
+- Expired signed URL.
+- Unauthorized access.
+- Cross-user isolation.
+- Delete.
+- Missing object.
+- Large upload.
+
+## 12.5 End-to-end render
+
+Uji melalui alur nyata:
+
+API
+→ PostgreSQL
+→ Cloud Tasks
+→ Authenticated dispatcher
+→ Cloud Run Jobs
+→ FFmpeg
+→ GCS
+→ PostgreSQL completed.
+
+Uji:
+- Balanced 1080p.
+- Balanced 4K.
+- Source 1080p.
+- Source 4K.
+- Source di bawah 1080p.
+- Video dengan audio.
+- Video tanpa audio.
+- Clip pendek.
+- Clip panjang.
+
+Validasi output menggunakan FFprobe.
+
+Jangan menggunakan mock sebagai satu-satunya bukti keberhasilan production.
+
+Pisahkan hasil:
+- Unit tests.
+- Integration tests.
+- Local end-to-end tests.
+- Cloud production smoke tests.
+
+Jangan menyatakan Cloud Run Jobs berhasil jika hanya berhasil diuji secara lokal.
+
+---
+
+# 13. TAHAP KESEPULUH — DEPLOYMENT DAN MIGRATION SAFETY
+
+Buat deployment checklist yang jelas.
+
+Urutan deployment:
+
+1. Backup database lama.
+2. Provision PostgreSQL.
+3. Provision GCS bucket.
+4. Buat Cloud Tasks queues.
+5. Buat service accounts.
+6. Terapkan IAM minimum.
+7. Deploy API.
+8. Deploy dispatcher.
+9. Deploy Cloud Run render worker.
+10. Jalankan smoke tests.
+11. Jalankan database migration.
+12. Verifikasi data.
+13. Aktifkan production dispatch secara bertahap.
+14. Pantau job success rate.
+15. Pertahankan rollback plan.
+
+Gunakan staged rollout.
+
+Jangan mengubah production traffic secara penuh sebelum validasi.
+
+Jangan menghapus SQLite atau backup lama.
+
+Jangan menghapus bucket atau object lama.
+
+Jangan mengubah autentikasi pengguna.
+
+Jika migration gagal:
+- Hentikan aktivasi.
+- Simpan log.
+- Pertahankan database lama.
+- Jangan menghapus data.
+- Berikan rollback instructions.
+
+---
+
+# 14. ADMIN CONTROL CENTER DAN READINESS
+
+Jangan membangun ulang Admin Control Center.
+
+Jika memang dibutuhkan, tambahkan informasi readiness yang bersumber dari backend aktual:
+
+- PostgreSQL connection status.
+- GCS status.
+- Cloud Tasks status.
+- Cloud Run Jobs status.
+- ADC readiness.
+- Worker readiness.
+- Last successful render.
+- Queue latency.
+- Render failure count.
+
+Semua informasi harus berasal dari health check dan data aktual.
+
+Jangan menampilkan status hijau hanya karena environment variable terisi.
+
+Bedakan:
+- Configured.
+- Authenticated.
+- Connected.
+- Operational.
+- Tested.
+
+Jangan mengekspos secret atau konfigurasi sensitif pada UI admin.
+
+---
+
+# 15. ACCEPTANCE CRITERIA
+
+Fase 0B hanya dapat dinyatakan selesai jika seluruh kriteria berikut terpenuhi:
+
+A. Worker
+- Cloud Run Job menjalankan render secara mandiri.
+- Worker benar-benar memanggil pipeline FFmpeg existing.
+- Worker mengunggah hasil ke GCS.
+- Worker memperbarui PostgreSQL.
+- Retry tidak menyebabkan duplikasi.
+- Job status konsisten.
+
+B. Authentication
+- Cloud Run API menggunakan ADC.
+- Cloud Tasks menggunakan OIDC untuk endpoint dispatcher.
+- Service account memiliki IAM minimum.
+- Tidak ada static access token sebagai mekanisme production.
+
+C. Database
+- PostgreSQL benar-benar menjadi runtime production.
+- Migration tervalidasi.
+- Data user dan relasi tetap konsisten.
+- SQLite masih tersedia sebagai backup/rollback selama masa transisi.
+
+D. Storage
+- GCS menjadi permanent storage production.
+- Source dan render asset dapat diambil ulang.
+- Tidak ada ketergantungan permanent pada filesystem Cloud Run.
+- User isolation tervalidasi.
+
+E. Queue
+- Cloud Tasks benar-benar memicu dispatcher.
+- Dispatcher benar-benar menjalankan Cloud Run Jobs.
+- Retry dan idempotency tervalidasi.
+
+F. Render
+- Render 1080p dan 4K berhasil melalui Cloud Run Jobs.
+- FFprobe memvalidasi output.
+- No-upscaling policy tetap berjalan.
+- Existing rendering features tidak rusak.
+
+G. Quality
+- Build berhasil.
+- TypeScript berhasil.
+- Seluruh test Fase 0A tetap lulus.
+- Test baru Fase 0B lulus.
+- Tidak ada regression pada authentication, YouTube, AI analysis, clip discovery, dashboard, dan render UI.
+
+---
+
+# 16. FORMAT LAPORAN HASIL
+
+Setelah implementasi, berikan laporan terstruktur:
+
+## A. Repository Audit
+- File yang diperiksa.
+- Temuan aktual.
+- Masalah yang sudah selesai.
+- Masalah yang masih ada.
+
+## B. Implementasi
+Untuk setiap perubahan:
+- Nama file.
+- Perubahan yang dilakukan.
+- Alasan teknis.
+- Dampak pada sistem.
+
+## C. Database
+- PostgreSQL architecture.
+- Migration strategy.
+- Schema changes.
+- Backup.
+- Validation.
+- Rollback.
+
+## D. Cloud Infrastructure
+- GCS.
+- Cloud Tasks.
+- Dispatcher.
+- ADC.
+- Cloud Run Jobs.
+- IAM.
+- Service accounts.
+
+## E. Render Worker
+- Entry point.
+- FFmpeg execution.
+- FFprobe.
+- Upload.
+- Job lifecycle.
+- Retry.
+- Idempotency.
+
+## F. Testing
+Buat tabel:
+
+| Test | Hasil | Bukti |
+|---|---|---|
+| Build | | |
+| TypeScript | | |
+| Unit tests | | |
+| Integration tests | | |
+| PostgreSQL | | |
+| GCS | | |
+| Cloud Tasks | | |
+| Cloud Run Jobs | | |
+| 1080p render | | |
+| 4K render | | |
+| Regression | | |
+
+## G. Deployment
+- File konfigurasi.
+- Environment variables.
+- Secrets.
+- IAM.
+- Langkah deployment.
+- Langkah rollback.
+
+## H. Remaining Work
+Daftar seluruh pekerjaan yang belum selesai.
+
+## I. Final Status
+
+Pilih satu:
+
+- COMPLETE: seluruh acceptance criteria terbukti.
+- PARTIALLY COMPLETE: kode selesai tetapi beberapa validasi belum dilakukan.
+- BLOCKED: ada masalah yang menghalangi implementasi.
+
+Jangan menyatakan COMPLETE jika Cloud SQL, GCS, Cloud Tasks, atau Cloud Run Jobs belum diuji pada Google Cloud sebenarnya.
+
+---
+
+# 17. INSTRUKSI AKHIR
+
+Kerjakan Fase 0B secara menyeluruh, tetapi dengan prinsip minimal perubahan dan menjaga kompatibilitas.
+
+Urutan prioritas:
+
+1. Audit kode terbaru.
+2. ADC.
+3. Standalone Cloud Run render worker.
+4. Cloud Tasks dan authenticated dispatcher.
+5. PostgreSQL runtime.
+6. GCS production enforcement.
+7. Cloud Run deployment.
+8. Monitoring.
+9. Testing.
+10. Staged rollout dan rollback.
+
+Jangan mengulang perbaikan Fase 0A yang sudah selesai.
+
+Jangan membangun ulang aplikasi.
+
+Jangan mengubah Firebase Authentication, Google Login, OAuth, atau YouTube integration.
+
+Jangan menghapus fitur yang sudah berfungsi.
+
+Jangan menghapus SQLite sebelum migration tervalidasi.
+
+Jangan mengklaim cloud integration selesai hanya berdasarkan mock atau local fallback.
+
+Jangan membuat metrik palsu.
+
+Jangan menyembunyikan error atau kegagalan konfigurasi.
+
+Jika ada konfigurasi Google Cloud yang membutuhkan tindakan manual, berikan instruksi yang tepat dan tandai sebagai pending, bukan menganggapnya sudah selesai.
+
+**TUJUAN AKHIR: AICLIPER memiliki fondasi infrastruktur produksi yang benar-benar operasional, aman, dapat dipulihkan, dan siap menjadi dasar pengembangan AI Intelligence, Smart Camera, Creative Studio, Animation Engine, serta Desktop Application tanpa harus membangun ulang arsitektur backend.**

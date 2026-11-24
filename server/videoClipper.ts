@@ -327,12 +327,14 @@ function escapeFfmpegFilterPath(filePath: string): string {
   return filePath.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "\\'");
 }
 
-async function probeVideoMeta(videoPath: string): Promise<{
+export async function probeVideoMeta(videoPath: string): Promise<{
   width: number;
   height: number;
   durationSec: number;
   sizeBytes: number;
+  videoCodec: string;
   audioCodec?: string;
+  audioChannels: number;
   videoStartTime: number;
   audioStartTime: number;
   videoDurationSec: number;
@@ -354,7 +356,7 @@ async function probeVideoMeta(videoPath: string): Promise<{
       '-v',
       'error',
       '-show_entries',
-      'format=duration,start_time:stream=codec_type,codec_name,width,height,start_time,duration',
+      'format=duration,start_time:stream=codec_type,codec_name,width,height,channels,start_time,duration',
       '-of',
       'json',
       videoPath,
@@ -368,6 +370,7 @@ async function probeVideoMeta(videoPath: string): Promise<{
       codec_name?: string;
       width?: number;
       height?: number;
+      channels?: number;
       start_time?: string;
       duration?: string;
     }>;
@@ -407,7 +410,9 @@ async function probeVideoMeta(videoPath: string): Promise<{
     height: videoStream.height!,
     durationSec,
     sizeBytes: stat.size,
+    videoCodec: videoStream.codec_name ?? 'unknown',
     audioCodec: audioStream?.codec_name,
+    audioChannels: Number(audioStream?.channels ?? 0),
     videoStartTime,
     audioStartTime,
     videoDurationSec: Number.isFinite(videoDurationSec) ? videoDurationSec : durationSec,
@@ -656,7 +661,7 @@ async function extractRawTrimmedSegment(params: {
           '-map',
           '0:v:0',
           '-map',
-          '0:a:0',
+          '0:a:0?',
           '-dn',
           '-sn',
           '-map_chapters',
@@ -741,6 +746,16 @@ async function extractRawTrimmedSegment(params: {
       ? `atrim=start=${preRollCommonTrimSec},asetpts=PTS-STARTPTS,aresample=async=1:first_pts=0`
       : 'asetpts=PTS-STARTPTS,aresample=async=1:first_pts=0';
 
+  let reencodeHasAudio = true;
+  if (!reencodeIsRemote && fs.existsSync(reencodeInputSource)) {
+    try {
+      const localProbe = await probeVideoMeta(reencodeInputSource);
+      reencodeHasAudio = Boolean(localProbe.audioCodec);
+    } catch {
+      reencodeHasAudio = true;
+    }
+  }
+
   try {
     const reencodeArgs = [
       ...buildInputPrefixArgs(reencodeInputSource, reencodeIsRemote, needSeekTrim),
@@ -748,8 +763,7 @@ async function extractRawTrimmedSegment(params: {
       String(durationSec),
       '-map',
       '0:v:0',
-      '-map',
-      '0:a:0',
+      ...(reencodeHasAudio ? ['-map', '0:a:0?'] : []),
       '-dn',
       '-sn',
       '-map_chapters',
@@ -758,8 +772,7 @@ async function extractRawTrimmedSegment(params: {
       '-1',
       '-vf',
       vfChain,
-      '-af',
-      afChain,
+      ...(reencodeHasAudio ? ['-af', afChain] : []),
       '-c:v',
       'libx264',
       '-preset',
@@ -768,13 +781,10 @@ async function extractRawTrimmedSegment(params: {
       '16',
       '-pix_fmt',
       'yuv420p',
-      '-c:a',
-      'aac',
-      '-b:a',
-      '192k',
+      ...(reencodeHasAudio ? ['-c:a', 'aac', '-b:a', '192k'] : ['-an']),
       '-avoid_negative_ts',
       'make_zero',
-      '-shortest',
+      ...(reencodeHasAudio ? ['-shortest'] : []),
       outputPath,
     ];
     const ffmpegBin = await ensureFfmpegPath();

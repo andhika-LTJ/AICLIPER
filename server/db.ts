@@ -907,6 +907,45 @@ export class KlipCastDatabase {
           );
       });
     }
+
+    if (!applied.has('004_phase0b_cloud_worker_lifecycle')) {
+      this.transaction(() => {
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS render_job_cloud_state (
+            job_id TEXT PRIMARY KEY REFERENCES render_jobs(job_id) ON DELETE CASCADE,
+            user_uid TEXT NOT NULL,
+            clip_id TEXT NOT NULL,
+            lifecycle_status TEXT NOT NULL DEFAULT 'queued'
+              CHECK (lifecycle_status IN ('queued', 'dispatching', 'running', 'uploading', 'completed', 'failed', 'cancelled')),
+            render_profile TEXT NOT NULL DEFAULT 'balanced_1080p',
+            source_fingerprint TEXT NOT NULL DEFAULT '',
+            render_fingerprint TEXT NOT NULL DEFAULT '',
+            cloud_task_name TEXT NOT NULL DEFAULT '',
+            cloud_run_execution TEXT NOT NULL DEFAULT '',
+            worker_claim_token TEXT,
+            worker_claimed_at TEXT,
+            failed_stage TEXT,
+            quota_consumed INTEGER NOT NULL DEFAULT 0,
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            updated_at TEXT NOT NULL
+          );
+          CREATE INDEX IF NOT EXISTS idx_sqlite_render_cloud_state_status
+            ON render_job_cloud_state(lifecycle_status, updated_at DESC);
+          CREATE INDEX IF NOT EXISTS idx_sqlite_render_cloud_state_fp
+            ON render_job_cloud_state(user_uid, render_fingerprint);
+        `);
+
+        this.db
+          .prepare(
+            'INSERT INTO schema_migrations (version, description, applied_at) VALUES (?, ?, ?)'
+          )
+          .run(
+            '004_phase0b_cloud_worker_lifecycle',
+            'Add Phase 0B cloud worker lifecycle state, atomic claim lock, Cloud Tasks/Cloud Run execution tracking, and quota idempotency guard',
+            nowIso()
+          );
+      });
+    }
   }
 
   // ---------- USERS, PROFILES & SETTINGS ----------
@@ -1744,6 +1783,433 @@ export class KlipCastDatabase {
       createdAt: r.created_at,
       updatedAt: r.updated_at,
       completedAt: r.completed_at,
+    };
+  }
+
+  // ---------- PHASE 0B CLOUD WORKER LIFECYCLE & TELEMETRY ----------
+
+  upsertRenderJobCloudState(input: {
+    jobId: string;
+    userUid: string;
+    clipId: string;
+    lifecycleStatus:
+      | 'queued'
+      | 'dispatching'
+      | 'running'
+      | 'uploading'
+      | 'completed'
+      | 'failed'
+      | 'cancelled';
+    renderProfile?: string;
+    sourceFingerprint?: string;
+    renderFingerprint?: string;
+    cloudTaskName?: string;
+    cloudRunExecution?: string;
+    failedStage?: string | null;
+    payloadJson?: Record<string, unknown>;
+  }): void {
+    const now = nowIso();
+    const providedRenderProfile = input.renderProfile?.trim() ?? '';
+    this.db
+      .prepare(
+        `INSERT INTO render_job_cloud_state (
+           job_id, user_uid, clip_id, lifecycle_status, render_profile,
+           source_fingerprint, render_fingerprint, cloud_task_name,
+           cloud_run_execution, failed_stage, payload_json, updated_at
+         ) VALUES (?, ?, ?, ?, COALESCE(NULLIF(?, ''), 'balanced_1080p'), ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(job_id) DO UPDATE SET
+           lifecycle_status = excluded.lifecycle_status,
+           render_profile = CASE WHEN ? <> '' THEN ? ELSE render_job_cloud_state.render_profile END,
+           source_fingerprint = CASE WHEN excluded.source_fingerprint <> '' THEN excluded.source_fingerprint ELSE render_job_cloud_state.source_fingerprint END,
+           render_fingerprint = CASE WHEN excluded.render_fingerprint <> '' THEN excluded.render_fingerprint ELSE render_job_cloud_state.render_fingerprint END,
+           cloud_task_name = CASE WHEN excluded.cloud_task_name <> '' THEN excluded.cloud_task_name ELSE render_job_cloud_state.cloud_task_name END,
+           cloud_run_execution = CASE WHEN excluded.cloud_run_execution <> '' THEN excluded.cloud_run_execution ELSE render_job_cloud_state.cloud_run_execution END,
+           failed_stage = COALESCE(excluded.failed_stage, render_job_cloud_state.failed_stage),
+           payload_json = CASE WHEN excluded.payload_json <> '{}' THEN excluded.payload_json ELSE render_job_cloud_state.payload_json END,
+           updated_at = excluded.updated_at`
+      )
+      .run(
+        input.jobId,
+        input.userUid,
+        input.clipId,
+        input.lifecycleStatus,
+        providedRenderProfile,
+        input.sourceFingerprint ?? '',
+        input.renderFingerprint ?? '',
+        input.cloudTaskName ?? '',
+        input.cloudRunExecution ?? '',
+        input.failedStage ?? null,
+        JSON.stringify(input.payloadJson ?? {}),
+        now,
+        providedRenderProfile,
+        providedRenderProfile
+      );
+  }
+
+  getRenderJobCloudState(jobId: string): {
+    jobId: string;
+    userUid: string;
+    clipId: string;
+    lifecycleStatus:
+      | 'queued'
+      | 'dispatching'
+      | 'running'
+      | 'uploading'
+      | 'completed'
+      | 'failed'
+      | 'cancelled';
+    renderProfile: string;
+    sourceFingerprint: string;
+    renderFingerprint: string;
+    cloudTaskName: string;
+    cloudRunExecution: string;
+    workerClaimToken: string | null;
+    workerClaimedAt: string | null;
+    failedStage: string | null;
+    quotaConsumed: boolean;
+    payload: Record<string, unknown>;
+    updatedAt: string;
+  } | null {
+    const r = this.db
+      .prepare('SELECT * FROM render_job_cloud_state WHERE job_id = ?')
+      .get(jobId) as
+      | {
+          job_id: string;
+          user_uid: string;
+          clip_id: string;
+          lifecycle_status:
+            | 'queued'
+            | 'dispatching'
+            | 'running'
+            | 'uploading'
+            | 'completed'
+            | 'failed'
+            | 'cancelled';
+          render_profile: string;
+          source_fingerprint: string;
+          render_fingerprint: string;
+          cloud_task_name: string;
+          cloud_run_execution: string;
+          worker_claim_token: string | null;
+          worker_claimed_at: string | null;
+          failed_stage: string | null;
+          quota_consumed: number;
+          payload_json: string;
+          updated_at: string;
+        }
+      | undefined;
+    if (!r) return null;
+    return {
+      jobId: r.job_id,
+      userUid: r.user_uid,
+      clipId: r.clip_id,
+      lifecycleStatus: r.lifecycle_status,
+      renderProfile: r.render_profile,
+      sourceFingerprint: r.source_fingerprint,
+      renderFingerprint: r.render_fingerprint,
+      cloudTaskName: r.cloud_task_name,
+      cloudRunExecution: r.cloud_run_execution,
+      workerClaimToken: r.worker_claim_token,
+      workerClaimedAt: r.worker_claimed_at,
+      failedStage: r.failed_stage,
+      quotaConsumed: Boolean(r.quota_consumed),
+      payload: safeParseJson<Record<string, unknown>>(r.payload_json, {}),
+      updatedAt: r.updated_at,
+    };
+  }
+
+  markRenderJobDispatching(
+    jobId: string,
+    cloudTaskName = ''
+  ): { claimed: boolean; state: ReturnType<KlipCastDatabase['getRenderJobCloudState']> } {
+    return this.transaction(() => {
+      const now = nowIso();
+      const res = this.db
+        .prepare(
+          `UPDATE render_job_cloud_state
+           SET lifecycle_status = 'dispatching',
+               cloud_task_name = CASE WHEN ? <> '' THEN ? ELSE cloud_task_name END,
+               updated_at = ?
+           WHERE job_id = ?
+             AND lifecycle_status IN ('queued', 'failed')
+             AND (cloud_run_execution = '' OR lifecycle_status = 'failed')`
+        )
+        .run(cloudTaskName, cloudTaskName, now, jobId);
+      const state = this.getRenderJobCloudState(jobId);
+      return { claimed: Number(res.changes ?? 0) > 0, state };
+    });
+  }
+
+  attachCloudRunExecution(jobId: string, executionName: string, cloudTaskName = ''): void {
+    const now = nowIso();
+    this.db
+      .prepare(
+        `UPDATE render_job_cloud_state
+         SET cloud_run_execution = ?,
+             cloud_task_name = CASE WHEN ? <> '' THEN ? ELSE cloud_task_name END,
+             updated_at = ?
+         WHERE job_id = ?`
+      )
+      .run(executionName, cloudTaskName, cloudTaskName, now, jobId);
+  }
+
+  claimRenderJobForWorker(
+    jobId: string,
+    claimToken: string,
+    options?: { staleLockTtlSec?: number }
+  ): {
+    claimed: boolean;
+    retryCount: number;
+    recoveredStaleLock: boolean;
+    state: ReturnType<KlipCastDatabase['getRenderJobCloudState']>;
+  } {
+    return this.transaction(() => {
+      const now = nowIso();
+      const nowMs = Date.now();
+      const existingJob = this.getRenderJobById(jobId);
+      const existingCloud = this.getRenderJobCloudState(jobId);
+      if (!existingJob || !existingCloud) {
+        return { claimed: false, retryCount: 0, recoveredStaleLock: false, state: existingCloud };
+      }
+      if (
+        existingJob.status === 'cancelled' ||
+        existingCloud.lifecycleStatus === 'cancelled' ||
+        existingCloud.lifecycleStatus === 'completed'
+      ) {
+        return {
+          claimed: false,
+          retryCount: existingJob.retryCount,
+          recoveredStaleLock: false,
+          state: existingCloud,
+        };
+      }
+
+      const envTtl = Number(process.env.WORKER_LOCK_TTL_SECONDS || 2100);
+      const staleLockTtlSec = Math.max(
+        1,
+        options?.staleLockTtlSec ?? (Number.isFinite(envTtl) && envTtl > 0 ? envTtl : 2100)
+      );
+
+      let recoveredStaleLock = false;
+      if (
+        existingCloud.lifecycleStatus === 'running' ||
+        existingCloud.lifecycleStatus === 'uploading'
+      ) {
+        const lockRefIso = existingCloud.workerClaimedAt || existingCloud.updatedAt;
+        const claimedAtMs = lockRefIso ? Date.parse(lockRefIso) : NaN;
+        const lockAgeSec = Number.isFinite(claimedAtMs) ? (nowMs - claimedAtMs) / 1000 : 0;
+        if (lockAgeSec < staleLockTtlSec) {
+          return {
+            claimed: false,
+            retryCount: existingJob.retryCount,
+            recoveredStaleLock: false,
+            state: existingCloud,
+          };
+        }
+        recoveredStaleLock = true;
+      }
+
+      const isRetry =
+        recoveredStaleLock ||
+        existingCloud.lifecycleStatus === 'failed' ||
+        existingJob.status === 'failed';
+      const nextRetryCount = isRetry ? existingJob.retryCount + 1 : existingJob.retryCount;
+
+      const res = recoveredStaleLock
+        ? this.db
+            .prepare(
+              `UPDATE render_job_cloud_state
+               SET lifecycle_status = 'running',
+                   worker_claim_token = ?,
+                   worker_claimed_at = ?,
+                   failed_stage = NULL,
+                   updated_at = ?
+               WHERE job_id = ?
+                 AND lifecycle_status IN ('running', 'uploading')`
+            )
+            .run(claimToken, now, now, jobId)
+        : this.db
+            .prepare(
+              `UPDATE render_job_cloud_state
+               SET lifecycle_status = 'running',
+                   worker_claim_token = ?,
+                   worker_claimed_at = ?,
+                   failed_stage = NULL,
+                   updated_at = ?
+               WHERE job_id = ?
+                 AND lifecycle_status IN ('queued', 'dispatching', 'failed')`
+            )
+            .run(claimToken, now, now, jobId);
+
+      if (Number(res.changes ?? 0) === 0) {
+        return {
+          claimed: false,
+          retryCount: existingJob.retryCount,
+          recoveredStaleLock: false,
+          state: this.getRenderJobCloudState(jobId),
+        };
+      }
+
+      this.db
+        .prepare(
+          `UPDATE render_jobs
+           SET status = 'running',
+               stage = ?,
+               progress = MAX(progress, 12),
+               retry_count = ?,
+               error_message = NULL,
+               error_code = NULL,
+               updated_at = ?
+           WHERE job_id = ?`
+        )
+        .run(
+          recoveredStaleLock
+            ? 'Worker baru mengambil alih job dari lock stale sebelumnya...'
+            : 'Worker memulai proses render video...',
+          nextRetryCount,
+          now,
+          jobId
+        );
+
+      return {
+        claimed: true,
+        retryCount: nextRetryCount,
+        recoveredStaleLock,
+        state: this.getRenderJobCloudState(jobId),
+      };
+    });
+  }
+
+  markRenderJobQuotaConsumed(jobId: string): boolean {
+    const res = this.db
+      .prepare(
+        `UPDATE render_job_cloud_state
+         SET quota_consumed = 1, updated_at = ?
+         WHERE job_id = ? AND quota_consumed = 0`
+      )
+      .run(nowIso(), jobId);
+    return Number(res.changes ?? 0) > 0;
+  }
+
+  getRenderTelemetrySummary(): {
+    lastSuccessfulRenderAt: string | null;
+    avgQueueLatencyMs: number | null;
+    avgDispatchLatencyMs: number | null;
+    avgRenderDurationMs: number | null;
+    avgUploadDurationMs: number | null;
+    renderFailureCount: number;
+    renderRetryCount: number;
+    completedRenderCount: number;
+    activeRenderCount: number;
+    queuedRenderCount: number;
+    processingRenderCount: number;
+    recentErrors: Array<{
+      jobId: string;
+      errorCode: string;
+      stage: string;
+      message: string;
+      occurredAt: string;
+    }>;
+  } {
+    const jobsRow = this.db
+      .prepare(
+        `SELECT
+           MAX(CASE WHEN status = 'completed' THEN completed_at END) AS last_success,
+           SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+           COALESCE(SUM(retry_count), 0) AS retry_count,
+           SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed_count,
+           SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS active_count
+         FROM render_jobs`
+      )
+      .get() as
+      | {
+          last_success: string | null;
+          failed_count: number | null;
+          retry_count: number | null;
+          completed_count: number | null;
+          active_count: number | null;
+        }
+      | undefined;
+
+    const cloudCountsRow = this.db
+      .prepare(
+        `SELECT
+           SUM(CASE WHEN lifecycle_status = 'queued' THEN 1 ELSE 0 END) AS queued_count,
+           SUM(CASE WHEN lifecycle_status IN ('dispatching', 'running', 'uploading') THEN 1 ELSE 0 END) AS processing_count
+         FROM render_job_cloud_state`
+      )
+      .get() as
+      | {
+          queued_count: number | null;
+          processing_count: number | null;
+        }
+      | undefined;
+
+    const recentErrRows = this.db
+      .prepare(
+        `SELECT r.job_id, r.error_code, r.error_message, r.stage,
+                COALESCE(c.failed_stage, r.stage) AS failed_stage,
+                COALESCE(r.completed_at, r.updated_at) AS occurred_at
+         FROM render_jobs r
+         LEFT JOIN render_job_cloud_state c ON c.job_id = r.job_id
+         WHERE r.status = 'failed'
+         ORDER BY COALESCE(r.completed_at, r.updated_at) DESC
+         LIMIT 5`
+      )
+      .all() as Array<{
+      job_id: string;
+      error_code: string | null;
+      error_message: string | null;
+      stage: string;
+      failed_stage: string | null;
+      occurred_at: string;
+    }>;
+
+    const perfRow = this.db
+      .prepare(
+        `SELECT
+           AVG(CASE WHEN operation = 'queue_enqueue' THEN duration_ms END) AS avg_queue_ms,
+           AVG(CASE WHEN operation = 'cloud_run_dispatch' THEN duration_ms END) AS avg_dispatch_ms,
+           AVG(CASE WHEN category = 'render' AND operation LIKE 'render_%' THEN duration_ms END) AS avg_render_ms,
+           AVG(CASE WHEN operation = 'gcs_upload' THEN duration_ms END) AS avg_upload_ms
+         FROM performance_metrics`
+      )
+      .get() as
+      | {
+          avg_queue_ms: number | null;
+          avg_dispatch_ms: number | null;
+          avg_render_ms: number | null;
+          avg_upload_ms: number | null;
+        }
+      | undefined;
+
+    const toRoundedOrNull = (val: number | null | undefined): number | null =>
+      typeof val === 'number' && Number.isFinite(val) ? Math.round(val) : null;
+
+    const queuedRenderCount = Number(cloudCountsRow?.queued_count ?? 0);
+    const activeCount = Number(jobsRow?.active_count ?? 0);
+    const cloudProcessing = Number(cloudCountsRow?.processing_count ?? 0);
+    const processingRenderCount = Math.max(cloudProcessing, Math.max(0, activeCount - queuedRenderCount));
+
+    return {
+      lastSuccessfulRenderAt: jobsRow?.last_success ?? null,
+      avgQueueLatencyMs: toRoundedOrNull(perfRow?.avg_queue_ms),
+      avgDispatchLatencyMs: toRoundedOrNull(perfRow?.avg_dispatch_ms),
+      avgRenderDurationMs: toRoundedOrNull(perfRow?.avg_render_ms),
+      avgUploadDurationMs: toRoundedOrNull(perfRow?.avg_upload_ms),
+      renderFailureCount: Number(jobsRow?.failed_count ?? 0),
+      renderRetryCount: Number(jobsRow?.retry_count ?? 0),
+      completedRenderCount: Number(jobsRow?.completed_count ?? 0),
+      activeRenderCount: activeCount,
+      queuedRenderCount,
+      processingRenderCount,
+      recentErrors: recentErrRows.map((r) => ({
+        jobId: r.job_id,
+        errorCode: r.error_code || 'RENDER_FAILED',
+        stage: r.failed_stage || r.stage || 'render',
+        message: String(r.error_message || 'Render gagal').slice(0, 220),
+        occurredAt: r.occurred_at,
+      })),
     };
   }
 

@@ -1,5 +1,6 @@
 import express from 'express';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import type { KlipCastDatabase } from '../db.ts';
 import type { AuthenticatedRequest } from '../authMiddleware.ts';
@@ -18,10 +19,14 @@ import {
   BALANCED_RENDER_PROFILES,
   computeSourceFingerprint,
 } from '../services/renderFingerprint.ts';
-import { getGcsReadinessStatus, isGcsConfigured } from '../services/gcsStorageService.ts';
-import { getCloudTasksReadinessStatus } from '../services/cloudTasksService.ts';
-import { getCloudRunJobsReadinessStatus } from '../services/cloudRunJobsService.ts';
-import { checkPgHealth, isPostgresConfigured } from '../../src/db/index.ts';
+import { checkGcsReadiness, isGcsConfigured } from '../services/gcsStorageService.ts';
+import { checkCloudTasksReadiness } from '../services/cloudTasksService.ts';
+import {
+  checkAdcReadiness,
+  checkCloudRunJobsReadiness,
+} from '../services/cloudRunJobsService.ts';
+import { checkPgReadiness } from '../../src/db/index.ts';
+import { PgRenderJobStore } from '../services/pgJobStore.ts';
 import { ensureFfmpegPath, ensureFfprobePath } from '../ffmpegBinaries.ts';
 import {
   GLOBAL_INTRO_TEMPLATES,
@@ -665,11 +670,13 @@ export function createV3Router(deps: CreateV3RouterDeps): express.Router {
   );
 
   router.get('/readiness', deps.apiRateLimit, deps.requireAuth, async (_req, res) => {
-    const pgConfigured = isPostgresConfigured();
-    const pgHealth = await checkPgHealth();
-    const gcs = getGcsReadinessStatus();
-    const tasks = getCloudTasksReadinessStatus();
-    const runJobs = getCloudRunJobsReadinessStatus();
+    const [pg, gcs, tasks, runJobs, adc] = await Promise.all([
+      checkPgReadiness(),
+      checkGcsReadiness(),
+      checkCloudTasksReadiness(),
+      checkCloudRunJobsReadiness(),
+      checkAdcReadiness(),
+    ]);
 
     let ffmpegReady = false;
     let ffprobeReady = false;
@@ -684,34 +691,92 @@ export function createV3Router(deps: CreateV3RouterDeps): express.Router {
       ffprobeReady = false;
     }
 
+    const pgStore = new PgRenderJobStore();
+    const pgTelemetry = pg.operational
+      ? await pgStore.getRenderTelemetrySummary().catch(() => null)
+      : null;
+    const telemetry = pgTelemetry ?? deps.db.getRenderTelemetrySummary();
+
+    const workerReady = {
+      configured: runJobs.configured,
+      authenticated: runJobs.authenticated && adc.authenticated,
+      connected: runJobs.connected,
+      operational: runJobs.operational && ffmpegReady && ffprobeReady,
+      tested: Boolean(telemetry.lastSuccessfulRenderAt),
+      mode: runJobs.operational ? 'cloud_run_jobs_worker' : 'local_worker_fallback',
+      entrypoint: 'workers/renderWorker.ts',
+    };
+
+    const allCloudResourcesProvisioned = Boolean(
+      pg.operational && gcs.operational && tasks.operational && runJobs.operational && adc.authenticated
+    );
+
+    const mem = process.memoryUsage();
+    const loadAvg = os.loadavg();
+    const runtimeResources = {
+      memoryRssMb: Math.round(mem.rss / (1024 * 1024)),
+      heapUsedMb: Math.round(mem.heapUsed / (1024 * 1024)),
+      heapTotalMb: Math.round(mem.heapTotal / (1024 * 1024)),
+      cpuCount: os.cpus().length,
+      loadAvg1m: Number((loadAvg[0] ?? 0).toFixed(2)),
+      uptimeSec: Math.round(process.uptime()),
+      nodeVersion: process.version,
+    };
+
     res.json({
       architecture: 'AICLIPER-V3-CLOUD-NATIVE',
+      phase: '0B',
+      deploymentPhase: '0C',
+      cloudRunServiceName: process.env.CLOUD_RUN_SERVICE_NAME?.trim() || process.env.K_SERVICE?.trim() || null,
+      readinessSemantics: {
+        configured: 'Environment variables or resource identifiers are present',
+        authenticated: 'Credentials / ADC / OIDC identity accepted by provider',
+        connected: 'Live network/API/DB connection succeeded',
+        operational: 'Schema/bucket/queue/job verified ready for live traffic',
+        tested: 'Real health check or execution verified in this environment',
+      },
       database: {
         targetEngine: 'Google Cloud SQL PostgreSQL + Drizzle ORM',
-        backend: pgHealth.connected ? 'postgresql' : 'sqlite_staged',
-        activeMode: pgHealth.connected ? 'postgresql_cloud_sql' : 'sqlite_staged_fallback',
-        configured: pgConfigured,
-        connected: pgHealth.connected,
-        latencyMs: pgHealth.latencyMs ?? null,
-        error: pgHealth.error ?? null,
+        backend: pg.operational ? 'postgresql' : 'sqlite_staged',
+        activeMode: pg.operational ? 'postgresql_cloud_sql' : 'sqlite_staged_fallback',
+        configured: pg.configured,
+        authenticated: pg.authenticated,
+        connected: pg.connected,
+        operational: pg.operational,
+        tested: pg.tested,
+        connectionMode: pg.connectionMode,
+        latencyMs: pg.latencyMs ?? null,
+        poolStats: pg.poolStats ?? null,
+        error: pg.error ?? null,
+      },
+      auth: {
+        adc,
+        oidcDispatcherConfigured: tasks.oidcConfigured,
+        staticGcpAccessTokenForbidden: true,
       },
       media: {
         ffmpegReady,
         ffprobeReady,
       },
-      storage: gcs,
+      storage: {
+        ...gcs,
+        configured: gcs.configured || isGcsConfigured(),
+      },
       queue: tasks,
       renderWorker: runJobs,
+      workerRuntime: workerReady,
+      runtimeResources,
+      telemetry,
       cvSidecar: {
         configured: Boolean(process.env.CV_WORKER_URL?.trim()),
-        mode: process.env.CV_WORKER_URL?.trim() ? 'external_python_cv' : 'gemini_plus_ffmpeg_vad_fallback',
+        mode: process.env.CV_WORKER_URL?.trim()
+          ? 'external_python_cv'
+          : 'gemini_plus_ffmpeg_vad_fallback',
       },
       renderStrategy: 'balanced',
       introCatalogCount: GLOBAL_INTRO_TEMPLATES.length,
       introCategoryCount: INTRO_TEMPLATE_CATEGORIES.length,
-      allCloudResourcesProvisioned: Boolean(
-        pgHealth.connected && isGcsConfigured() && tasks.configured && runJobs.configured
-      ),
+      allCloudResourcesProvisioned,
     });
   });
 

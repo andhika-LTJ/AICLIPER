@@ -85,7 +85,9 @@ export function buildRealAdminOverview(db: KlipCastDatabase): AdminOverviewData 
       cpuCount: os.cpus()?.length || 1,
       loadAvg1m: Number((load[0] ?? 0).toFixed(2)),
       dbStatus: db.checkHealth() ? 'healthy' : 'error',
-      dbEngine: 'SQLite WAL (node:sqlite)',
+      dbEngine: process.env.SQL_HOST?.trim() || process.env.SQL_INSTANCE_CONNECTION_NAME?.trim()
+        ? 'PostgreSQL (Cloud SQL) + SQLite Staged'
+        : 'SQLite WAL (node:sqlite)',
       geminiConfigured: Boolean(process.env.GEMINI_API_KEY?.trim()),
       ffmpegReady: Boolean(getAvailableFfmpegPathSync()),
       ffprobeReady: Boolean(getAvailableFfprobePathSync()),

@@ -1,3 +1,24 @@
+# AICLIPER Fase 0C — Cloud Run Job Render Worker Manifest (TEMPLATE)
+#
+# IMPORTANT:
+#   This file is a deployment template. Substitute all `${...}` variables using
+#   `envsubst` or CI/CD before applying with:
+#     envsubst < infra/cloud-run-render-job.yaml | gcloud run jobs replace - --region=${GCP_REGION}
+#
+# Balanced CPU-Only Resource Sizing (Render Strategy: Balanced):
+#   - Default 1080p Shorts (balanced_1080p): cpu: "4", memory: "8Gi", timeoutSeconds: 1800
+#   - Heavy 4K Shorts (balanced_4k):        increase to cpu: "8", memory: "16Gi", timeoutSeconds: 3600
+#   - Ephemeral /tmp storage is automatically backed by container memory in Gen2;
+#     worker cleans up `/tmp/aicliper-worker-*` in `finally` on both success and failure.
+#
+# Required Service Account:
+#   `aicliper-render-worker-sa@${GCP_PROJECT_ID}.iam.gserviceaccount.com`
+#   Least-privilege roles:
+#     - roles/storage.objectAdmin (scoped via IAM condition to the AICLIPER media bucket ONLY)
+#     - roles/cloudsql.client
+#     - roles/secretmanager.secretAccessor (scoped to SQL_PASSWORD / GEMINI_API_KEY)
+#     - roles/logging.logWriter
+
 apiVersion: run.googleapis.com/v1
 kind: Job
 metadata:
@@ -5,17 +26,23 @@ metadata:
   labels:
     app: aicliper
     component: render-worker
+    phase: phase-0c
 spec:
   template:
+    metadata:
+      annotations:
+        run.googleapis.com/execution-environment: gen2
+        run.googleapis.com/cloudsql-instances: ${SQL_INSTANCE_CONNECTION_NAME}
     spec:
-      parallelism: 1
       taskCount: 1
       template:
         spec:
+          serviceAccountName: aicliper-render-worker-sa@${GCP_PROJECT_ID}.iam.gserviceaccount.com
           maxRetries: 2
           timeoutSeconds: 1800
           containers:
-            - image: gcr.io/PROJECT_ID/aicliper-render-worker:latest
+            - name: render-worker
+              image: ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/aicliper/render-worker:${IMAGE_TAG}
               resources:
                 limits:
                   cpu: "4"
@@ -23,13 +50,38 @@ spec:
               env:
                 - name: NODE_ENV
                   value: "production"
-                - name: RENDER_DEFAULT_PROFILE
-                  value: "balanced_1080p"
+                - name: GCS_REQUIRED
+                  value: "true"
+                - name: WORKER_LOCK_TTL_SECONDS
+                  value: "2100"
+                - name: GCP_PROJECT_ID
+                  value: "${GCP_PROJECT_ID}"
+                - name: GCP_REGION
+                  value: "${GCP_REGION}"
                 - name: GCS_BUCKET_NAME
-                  value: "REPLACE_WITH_GCS_BUCKET"
-                - name: SQL_HOST
-                  value: "REPLACE_WITH_CLOUD_SQL_HOST"
+                  value: "${GCS_BUCKET_NAME}"
+                - name: SQL_INSTANCE_CONNECTION_NAME
+                  value: "${SQL_INSTANCE_CONNECTION_NAME}"
                 - name: SQL_DB_NAME
-                  value: "aicliper"
+                  value: "${SQL_DB_NAME}"
                 - name: SQL_USER
-                  value: "aicliper_app"
+                  value: "${SQL_USER}"
+                - name: SQL_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: aicliper-sql-password
+                      key: latest
+                - name: GEMINI_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: aicliper-gemini-api-key
+                      key: latest
+                # Dynamic per-execution env vars injected by dispatcher via Cloud Run Jobs API overrides:
+                #   - AICLIPER_RENDER_JOB_ID
+                #   - AICLIPER_USER_UID
+                #   - AICLIPER_CLIP_ID
+                #   - AICLIPER_RENDER_PROFILE
+                #   - AICLIPER_RENDER_FINGERPRINT
+                #   - AICLIPER_SOURCE_FINGERPRINT
+                #   - AICLIPER_QUEUE_TASK_NAME
+                #   - AICLIPER_CORRELATION_ID
