@@ -47,6 +47,46 @@ export type CanonicalStudioLayout =
 
 export type CanonicalRenderQuality = '1080p' | '4k';
 
+const VALID_RENDER_LAYOUT_INPUTS = new Set([
+  'shorts_full_bleed',
+  'shorts_studio_focus',
+  'full_16_9_focus',
+  'square_1_1',
+  'portrait_4_5',
+  'vertical_9_16',
+  'landscape_16_9',
+]);
+
+const VALID_RENDER_QUALITY_INPUTS = new Set([
+  '1080p',
+  'fhd',
+  'full_hd',
+  '4k',
+  '2160p',
+  'ultra_hd',
+  'ultrahd',
+  'uhd',
+]);
+
+const VALID_RENDER_PROFILE_INPUTS = new Set([
+  'fast_preview',
+  'balanced_1080p',
+  'balanced_4k',
+  'high_quality',
+]);
+
+export function isValidRenderLayoutInput(layout: unknown): boolean {
+  return typeof layout === 'string' && VALID_RENDER_LAYOUT_INPUTS.has(layout.trim());
+}
+
+export function isValidRenderQualityInput(quality: unknown): boolean {
+  return typeof quality === 'string' && VALID_RENDER_QUALITY_INPUTS.has(quality.trim().toLowerCase());
+}
+
+export function isValidRenderProfileInput(profile: unknown): boolean {
+  return typeof profile === 'string' && VALID_RENDER_PROFILE_INPUTS.has(profile.trim());
+}
+
 export function normalizeRenderLayout(layout?: ClipRenderLayout): CanonicalStudioLayout {
   if (layout === 'full_16_9_focus' || layout === 'landscape_16_9') return 'full_16_9_focus';
   if (layout === 'shorts_studio_focus' || layout === 'vertical_9_16') return 'shorts_studio_focus';
@@ -100,6 +140,136 @@ export function getTargetCanvasDimensions(
     return quality === '4k' ? { outW: 2160, outH: 2700 } : { outW: 1080, outH: 1350 };
   }
   return quality === '4k' ? { outW: 2160, outH: 3840 } : { outW: 1080, outH: 1920 };
+}
+
+export interface NonUpscaledDimensionResolution {
+  outW: number;
+  outH: number;
+  targetW: number;
+  targetH: number;
+  effectiveQuality: CanonicalRenderQuality;
+  wasCappedNoUpscale: boolean;
+  reason?: string;
+}
+
+/**
+ * Resolves final render canvas dimensions preserving the configured layout aspect ratio
+ * and NEVER automatically upscaling to 4K when the source video lacks 4K resolution.
+ */
+export function resolveNonUpscaledTargetDimensions(params: {
+  layout: CanonicalStudioLayout;
+  quality: CanonicalRenderQuality;
+  profileId?: string;
+  sourceWidth?: number;
+  sourceHeight?: number;
+}): NonUpscaledDimensionResolution {
+  const { layout, quality, profileId, sourceWidth = 0, sourceHeight = 0 } = params;
+
+  if (profileId === 'fast_preview') {
+    const previewDims =
+      layout === 'full_16_9_focus'
+        ? { outW: 1280, outH: 720 }
+        : layout === 'square_1_1'
+          ? { outW: 720, outH: 720 }
+          : layout === 'portrait_4_5'
+            ? { outW: 720, outH: 900 }
+            : { outW: 720, outH: 1280 };
+    return {
+      ...previewDims,
+      targetW: previewDims.outW,
+      targetH: previewDims.outH,
+      effectiveQuality: '1080p',
+      wasCappedNoUpscale: false,
+    };
+  }
+
+  const base = getTargetCanvasDimensions(layout, quality);
+  if (quality !== '4k' || sourceWidth <= 0 || sourceHeight <= 0) {
+    return {
+      outW: base.outW,
+      outH: base.outH,
+      targetW: base.outW,
+      targetH: base.outH,
+      effectiveQuality: quality,
+      wasCappedNoUpscale: false,
+    };
+  }
+
+  const srcMin = Math.min(sourceWidth, sourceHeight);
+  const srcMax = Math.max(sourceWidth, sourceHeight);
+  const supports4kForLayout =
+    layout === 'full_16_9_focus'
+      ? sourceWidth >= 3840 && sourceHeight >= 2160
+      : srcMin >= 2160 && srcMax >= 2160;
+
+  if (supports4kForLayout) {
+    return {
+      outW: base.outW,
+      outH: base.outH,
+      targetW: base.outW,
+      targetH: base.outH,
+      effectiveQuality: '4k',
+      wasCappedNoUpscale: false,
+    };
+  }
+
+  // Cap cleanly without upscaling above native source resolution while keeping aspect ratio intact
+  if (srcMin >= 1080) {
+    const capped1080 = getTargetCanvasDimensions(layout, '1080p');
+    return {
+      outW: capped1080.outW,
+      outH: capped1080.outH,
+      targetW: base.outW,
+      targetH: base.outH,
+      effectiveQuality: '1080p',
+      wasCappedNoUpscale: true,
+      reason: `Sumber video hanya tersedia pada resolusi ${sourceWidth}×${sourceHeight}. Output otomatis dijaga pada ${capped1080.outW}×${capped1080.outH} (1080p) tanpa upscaling ke 4K.`,
+    };
+  }
+
+  const hd720 =
+    layout === 'full_16_9_focus'
+      ? { outW: 1280, outH: 720 }
+      : layout === 'square_1_1'
+        ? { outW: 720, outH: 720 }
+        : layout === 'portrait_4_5'
+          ? { outW: 720, outH: 900 }
+          : { outW: 720, outH: 1280 };
+
+  if (srcMin >= 720) {
+    return {
+      outW: hd720.outW,
+      outH: hd720.outH,
+      targetW: base.outW,
+      targetH: base.outH,
+      effectiveQuality: '1080p',
+      wasCappedNoUpscale: true,
+      reason: `Sumber video hanya tersedia pada resolusi ${sourceWidth}×${sourceHeight}. Output dipertahankan pada ${hd720.outW}×${hd720.outH} tanpa upscaling otomatis ke 4K.`,
+    };
+  }
+
+  // Sub-720p source when 4K was requested: compute bounded even dimensions matching layout aspect ratio
+  const aspectW =
+    layout === 'full_16_9_focus' ? 16 : layout === 'square_1_1' ? 1 : layout === 'portrait_4_5' ? 4 : 9;
+  const aspectH =
+    layout === 'full_16_9_focus' ? 9 : layout === 'square_1_1' ? 1 : layout === 'portrait_4_5' ? 5 : 16;
+  const targetRatio = aspectW / aspectH;
+  const scaleFactor = Math.min(sourceWidth / base.outW, sourceHeight / base.outH, 1);
+  let boundedH = Math.max(360, roundEven(base.outH * Math.max(0.25, scaleFactor)));
+  let boundedW = roundEven(boundedH * targetRatio);
+  if (boundedW > sourceWidth && layout === 'full_16_9_focus') {
+    boundedW = roundEven(sourceWidth);
+    boundedH = roundEven(boundedW / targetRatio);
+  }
+  return {
+    outW: boundedW,
+    outH: boundedH,
+    targetW: base.outW,
+    targetH: base.outH,
+    effectiveQuality: '1080p',
+    wasCappedNoUpscale: true,
+    reason: `Sumber video beresolusi ${sourceWidth}×${sourceHeight} (di bawah 4K). Output dipertahankan pada ${boundedW}×${boundedH} tanpa upscaling otomatis ke 4K.`,
+  };
 }
 
 function clamp(val: number, min: number, max: number): number {

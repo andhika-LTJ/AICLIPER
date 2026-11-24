@@ -2,15 +2,23 @@ import type { PlanTier, QuotaSummary } from '../src/types/clipper.ts';
 import { getCurrentPeriodYm, type KlipCastDatabase } from './db.ts';
 
 export class QuotaExceededError extends Error {
-  status = 403;
-  code = 'QUOTA_EXCEEDED';
+  status: number;
+  code: string;
   resource: string;
   limit: number;
   used: number;
 
-  constructor(message: string, resource: string, used: number, limit: number) {
+  constructor(
+    message: string,
+    resource: string,
+    used: number,
+    limit: number,
+    options?: { status?: number; code?: string }
+  ) {
     super(message);
     this.name = 'QuotaExceededError';
+    this.status = options?.status ?? 403;
+    this.code = options?.code ?? 'QUOTA_EXCEEDED';
     this.resource = resource;
     this.used = used;
     this.limit = limit;
@@ -53,21 +61,23 @@ export function getUserQuotaSummary(
   const sub = db.ensureSubscription(userUid);
   const usage = db.getOrCreateUsageRecord(userUid, periodYm);
   const projectsUsed = db.countUserEpisodes(userUid);
+  const planTier = sub.plan_tier as PlanTier;
+  const planOverride = db.getSystemPlanOverrides()?.[planTier];
 
   return {
-    planTier: sub.plan_tier as PlanTier,
+    planTier,
     periodYm,
     aiAnalysesUsed: usage.ai_analyses_used,
-    monthlyAiLimit: sub.monthly_ai_limit,
+    monthlyAiLimit: planOverride?.monthlyAiLimit ?? sub.monthly_ai_limit,
     rendersUsed: usage.renders_used,
-    monthlyRenderLimit: sub.monthly_render_limit,
+    monthlyRenderLimit: planOverride?.monthlyRenderLimit ?? sub.monthly_render_limit,
     uploadsUsed: usage.uploads_used,
-    monthlyUploadLimit: sub.monthly_upload_limit,
+    monthlyUploadLimit: planOverride?.monthlyUploadLimit ?? sub.monthly_upload_limit,
     storageBytesUsed: usage.storage_bytes_used,
-    maxStorageMb: sub.max_storage_mb,
-    maxVideoDurationSec: sub.max_video_duration_sec,
-    maxExportQuality: sub.max_export_quality,
-    maxProjects: sub.max_projects,
+    maxStorageMb: planOverride?.maxStorageMb ?? sub.max_storage_mb,
+    maxVideoDurationSec: planOverride?.maxVideoDurationSec ?? sub.max_video_duration_sec,
+    maxExportQuality: planOverride?.maxExportQuality ?? sub.max_export_quality,
+    maxProjects: planOverride?.maxProjects ?? sub.max_projects,
     projectsUsed,
   };
 }
@@ -105,26 +115,29 @@ export function assertQuotaAvailable(
       `Kuota analisis AI bulanan paket ${q.planTier.toUpperCase()} (${q.monthlyAiLimit}x/bulan) sudah habis.`,
       'ai',
       q.aiAnalysesUsed,
-      q.monthlyAiLimit
+      q.monthlyAiLimit,
+      { status: 403, code: 'QUOTA_EXCEEDED' }
     );
   }
 
   if (resource === 'render' && q.rendersUsed >= q.monthlyRenderLimit) {
     throw new QuotaExceededError(
-      `Kuota render video bulanan paket ${q.planTier.toUpperCase()} (${q.monthlyRenderLimit}x/bulan) sudah habis.`,
+      `Batas render bulanan paket ${q.planTier.toUpperCase()} (${q.monthlyRenderLimit}x/bulan) telah tercapai. Tunggu reset bulan depan atau tingkatkan paket.`,
       'render',
       q.rendersUsed,
-      q.monthlyRenderLimit
+      q.monthlyRenderLimit,
+      { status: 429, code: 'USAGE_LIMIT_REACHED' }
     );
   }
 
   if (resource === 'upload') {
     if (q.uploadsUsed >= q.monthlyUploadLimit) {
       throw new QuotaExceededError(
-        `Kuota unggah bulanan paket ${q.planTier.toUpperCase()} (${q.monthlyUploadLimit}x/bulan) sudah habis.`,
+        `Batas unggah bulanan paket ${q.planTier.toUpperCase()} (${q.monthlyUploadLimit}x/bulan) telah tercapai.`,
         'upload',
         q.uploadsUsed,
-        q.monthlyUploadLimit
+        q.monthlyUploadLimit,
+        { status: 429, code: 'USAGE_LIMIT_REACHED' }
       );
     }
     const maxBytes = q.maxStorageMb * 1024 * 1024;
@@ -133,7 +146,8 @@ export function assertQuotaAvailable(
         `Batas penyimpanan paket ${q.planTier.toUpperCase()} (${q.maxStorageMb} MB) terlampaui.`,
         'storage',
         Math.round((q.storageBytesUsed + options.incomingBytes) / (1024 * 1024)),
-        q.maxStorageMb
+        q.maxStorageMb,
+        { status: 403, code: 'QUOTA_EXCEEDED' }
       );
     }
   }
@@ -143,7 +157,8 @@ export function assertQuotaAvailable(
       `Jumlah episode aktif mencapai batas paket ${q.planTier.toUpperCase()} (${q.maxProjects} proyek).`,
       'project',
       q.projectsUsed,
-      q.maxProjects
+      q.maxProjects,
+      { status: 403, code: 'QUOTA_EXCEEDED' }
     );
   }
 
@@ -152,7 +167,8 @@ export function assertQuotaAvailable(
       `Ekspor 4K Ultra HD tersedia mulai paket Pro & Business (paket saat ini: ${q.planTier.toUpperCase()}). Gunakan 1080p Full HD atau tingkatkan paket.`,
       'quality_4k',
       1,
-      0
+      0,
+      { status: 403, code: 'PLAN_4K_LOCKED' }
     );
   }
 
@@ -164,7 +180,8 @@ export function assertQuotaAvailable(
       `Durasi video (${Math.round(options.videoDurationSec / 60)} menit) melebihi batas paket ${q.planTier.toUpperCase()} (${Math.round(q.maxVideoDurationSec / 60)} menit).`,
       'duration',
       options.videoDurationSec,
-      q.maxVideoDurationSec
+      q.maxVideoDurationSec,
+      { status: 403, code: 'PLAN_DURATION_LIMIT' }
     );
   }
 

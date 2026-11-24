@@ -18,6 +18,10 @@ import type {
 } from '../types/clipper';
 import { apiFetch } from '../utils/apiClient';
 import { PLATFORM_LABELS } from '../utils/youtube';
+import {
+  GLOBAL_INTRO_TEMPLATES,
+  INTRO_TEMPLATE_CATEGORIES,
+} from '../data/introTemplatesCatalog';
 
 interface AnalyticsAndTemplatesViewProps {
   isAuthenticated: boolean;
@@ -584,6 +588,44 @@ export function AnalyticsAndTemplatesView({
                 ))}
               </div>
             )}
+          </section>
+
+          <section className="lg:col-span-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h2 className="font-display text-sm font-bold text-slate-900 dark:text-white">
+                  Katalog Bawaan Studio Intro Pro ({INTRO_TEMPLATE_CATEGORIES.length} Kategori)
+                </h2>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Pilih dan edit penuh seluruh layer, latar, animasi, dan durasi intro melalui Studio Klip → Studio Intro Pro.
+                </p>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              {GLOBAL_INTRO_TEMPLATES.map((tpl) => (
+                <div
+                  key={tpl.id}
+                  className="p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 space-y-1.5"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                      {tpl.name}
+                    </span>
+                    <span
+                      aria-hidden="true"
+                      className="w-3.5 h-3.5 rounded-sm border border-slate-300 shrink-0"
+                      style={{ background: tpl.background.primaryColor }}
+                    />
+                  </div>
+                  <div className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                    {tpl.category} · {tpl.durationSec.toFixed(1)}d
+                  </div>
+                  <p className="text-[11px] text-slate-600 dark:text-slate-300 line-clamp-2">
+                    {tpl.description}
+                  </p>
+                </div>
+              ))}
+            </div>
           </section>
         </div>
       )}

@@ -24,6 +24,7 @@ interface ManualShortsModalProps {
   isOpen: boolean;
   defaultRenderQuality: ClipRenderQuality;
   defaultRenderLayout: ClipRenderLayout;
+  maxExportQuality?: ClipRenderQuality;
   onClose: () => void;
   onMarkManualPublished: (clipId: string) => Promise<void>;
   onStoreUpdate: (nextStore: StudioStoreState) => void;
@@ -35,6 +36,7 @@ export function ManualShortsModal({
   isOpen,
   defaultRenderQuality,
   defaultRenderLayout,
+  maxExportQuality = '1080p',
   onClose,
   onMarkManualPublished,
   onStoreUpdate,
@@ -85,10 +87,13 @@ export function ManualShortsModal({
     setRenderError(null);
     setRenderStage('Memulai render MP4...');
     try {
+      const candidateQuality = clip.renderedQuality ?? defaultRenderQuality;
+      const safeQuality: ClipRenderQuality =
+        candidateQuality === '4k' && maxExportQuality !== '4k' ? '1080p' : candidateQuality;
       const data = await runRenderClipJob({
         clipId: clip.id,
         layout: clip.renderedLayout ?? defaultRenderLayout,
-        quality: clip.renderedQuality ?? defaultRenderQuality,
+        quality: safeQuality,
         signal: controller.signal,
         onJobStarted: (jobId) => {
           if (abortRef.current === controller) activeJobIdRef.current = jobId;

@@ -5,7 +5,7 @@
  * GCS upload/download, and real performance_metrics + job_events logging.
  */
 
-import { getDatabase } from '../server/db.ts';
+import { getDatabase, type KlipCastDatabase } from '../server/db.ts';
 import { uploadFileToMediaStorage } from '../server/services/gcsStorageService.ts';
 import { resolveBalancedRenderProfile } from '../server/services/renderFingerprint.ts';
 
@@ -17,6 +17,10 @@ export interface RenderWorkerRunContext {
   renderFingerprint: string;
   sourceFingerprint: string;
   localOutputPath?: string;
+  width?: number;
+  height?: number;
+  durationSec?: number;
+  db?: KlipCastDatabase;
 }
 
 export async function finalizeRenderWorkerOutput(ctx: RenderWorkerRunContext): Promise<{
@@ -25,7 +29,7 @@ export async function finalizeRenderWorkerOutput(ctx: RenderWorkerRunContext): P
   localPath: string;
   sizeBytes: number;
 }> {
-  const db = getDatabase();
+  const db = ctx.db ?? getDatabase();
   const profile = resolveBalancedRenderProfile(ctx.renderProfile);
   const startedAt = Date.now();
 
@@ -60,9 +64,9 @@ export async function finalizeRenderWorkerOutput(ctx: RenderWorkerRunContext): P
     gcsUri,
     localPath,
     sizeBytes,
-    durationSec: 0,
-    width: profile.width9x16,
-    height: profile.height9x16,
+    durationSec: ctx.durationSec ?? 0,
+    width: ctx.width ?? profile.width9x16,
+    height: ctx.height ?? profile.height9x16,
   });
 
   db.recordPerformanceMetric({

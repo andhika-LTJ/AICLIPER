@@ -12,7 +12,11 @@ test('isTransientRenderHttpStatus treats 429 and 5xx gateway statuses as recover
   assert.equal(isTransientRenderHttpStatus(504), true);
   assert.equal(isTransientRenderHttpStatus(408), true);
   assert.equal(isTransientRenderHttpStatus(400), false);
+  assert.equal(isTransientRenderHttpStatus(401), false);
+  assert.equal(isTransientRenderHttpStatus(403), false);
   assert.equal(isTransientRenderHttpStatus(404), false);
+  assert.equal(isTransientRenderHttpStatus(422), false);
+  assert.equal(isTransientRenderHttpStatus(500), false);
 });
 
 test('computeRenderBackoffMs respects Retry-After and scales smoothly on 429', () => {

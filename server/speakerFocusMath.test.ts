@@ -6,11 +6,15 @@ import {
   computeFocusFromFaceBox,
   generateStudioAssScript,
   getTargetCanvasDimensions,
+  isValidRenderLayoutInput,
+  isValidRenderProfileInput,
+  isValidRenderQualityInput,
   normalizeRenderLayout,
   normalizeRenderQuality,
   normalizeSpeakerKeyframes,
   normalizeTranscribedCues,
   resolveEffectiveRenderQuality,
+  resolveNonUpscaledTargetDimensions,
   wrapTitleLines,
 } from './speakerFocusMath';
 
@@ -202,4 +206,81 @@ test('generateStudioAssScript renders natural 9:16 Full Frame ASS with kinetic E
   assert.ok(!assNoEmotion.includes('\\fscx93\\fscy93'));
   assert.ok(!assNoEmotion.includes('1C1CDC'));
 });
+
+test('resolveNonUpscaledTargetDimensions enforces exact 4K dimensions for 4K sources and prevents upscaling on lower sources', () => {
+  const portrait4kFromLandscape4k = resolveNonUpscaledTargetDimensions({
+    layout: 'shorts_full_bleed',
+    quality: '4k',
+    profileId: 'balanced_4k',
+    sourceWidth: 3840,
+    sourceHeight: 2160,
+  });
+  assert.equal(portrait4kFromLandscape4k.outW, 2160);
+  assert.equal(portrait4kFromLandscape4k.outH, 3840);
+  assert.equal(portrait4kFromLandscape4k.effectiveQuality, '4k');
+  assert.equal(portrait4kFromLandscape4k.wasCappedNoUpscale, false);
+
+  const landscape4k = resolveNonUpscaledTargetDimensions({
+    layout: 'full_16_9_focus',
+    quality: '4k',
+    profileId: 'balanced_4k',
+    sourceWidth: 3840,
+    sourceHeight: 2160,
+  });
+  assert.equal(landscape4k.outW, 3840);
+  assert.equal(landscape4k.outH, 2160);
+  assert.equal(landscape4k.effectiveQuality, '4k');
+  assert.equal(landscape4k.wasCappedNoUpscale, false);
+
+  const cappedFrom1080 = resolveNonUpscaledTargetDimensions({
+    layout: 'shorts_full_bleed',
+    quality: '4k',
+    profileId: 'balanced_4k',
+    sourceWidth: 1920,
+    sourceHeight: 1080,
+  });
+  assert.equal(cappedFrom1080.outW, 1080);
+  assert.equal(cappedFrom1080.outH, 1920);
+  assert.equal(cappedFrom1080.effectiveQuality, '1080p');
+  assert.equal(cappedFrom1080.wasCappedNoUpscale, true);
+
+  const cappedLandscapeFrom720 = resolveNonUpscaledTargetDimensions({
+    layout: 'full_16_9_focus',
+    quality: '4k',
+    profileId: 'balanced_4k',
+    sourceWidth: 1280,
+    sourceHeight: 720,
+  });
+  assert.equal(cappedLandscapeFrom720.outW, 1280);
+  assert.equal(cappedLandscapeFrom720.outH, 720);
+  assert.equal(cappedLandscapeFrom720.effectiveQuality, '1080p');
+  assert.equal(cappedLandscapeFrom720.wasCappedNoUpscale, true);
+
+  const preview720 = resolveNonUpscaledTargetDimensions({
+    layout: 'shorts_full_bleed',
+    quality: '4k',
+    profileId: 'fast_preview',
+    sourceWidth: 3840,
+    sourceHeight: 2160,
+  });
+  assert.equal(preview720.outW, 720);
+  assert.equal(preview720.outH, 1280);
+  assert.equal(preview720.effectiveQuality, '1080p');
+});
+
+test('render input validators accept known values and reject invalid payloads', () => {
+  assert.equal(isValidRenderLayoutInput('shorts_full_bleed'), true);
+  assert.equal(isValidRenderLayoutInput('full_16_9_focus'), true);
+  assert.equal(isValidRenderLayoutInput('invalid_ratio'), false);
+
+  assert.equal(isValidRenderQualityInput('1080p'), true);
+  assert.equal(isValidRenderQualityInput('4k'), true);
+  assert.equal(isValidRenderQualityInput('2160p'), true);
+  assert.equal(isValidRenderQualityInput('8k_experimental'), false);
+
+  assert.equal(isValidRenderProfileInput('balanced_4k'), true);
+  assert.equal(isValidRenderProfileInput('fast_preview'), true);
+  assert.equal(isValidRenderProfileInput('ultra_magic'), false);
+});
+
 

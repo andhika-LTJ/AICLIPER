@@ -3,6 +3,7 @@ import { Check, RotateCcw, Send, Sparkles } from 'lucide-react';
 import type {
   BotAutomationConfig,
   ClipRenderQuality,
+  PlanTier,
   SocialPlatform,
 } from '../types/clipper';
 import { PLATFORM_LABELS } from '../utils/youtube';
@@ -12,6 +13,8 @@ interface AutomationSettingsViewProps {
   config: BotAutomationConfig;
   isAuthenticated?: boolean;
   canManageCookies?: boolean;
+  maxExportQuality?: ClipRenderQuality;
+  planTier?: PlanTier;
   onSaveConfig: (next: BotAutomationConfig) => Promise<void>;
   onResetDemo: () => Promise<void>;
 }
@@ -29,9 +32,12 @@ export function AutomationSettingsView({
   config,
   isAuthenticated = false,
   canManageCookies = false,
+  maxExportQuality = '1080p',
+  planTier = 'free',
   onSaveConfig,
   onResetDemo,
 }: AutomationSettingsViewProps) {
+  const canExport4k = maxExportQuality === '4k';
   const [draft, setDraft] = useState<BotAutomationConfig>(config);
   const [isSaving, setIsSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
@@ -227,7 +233,7 @@ export function AutomationSettingsView({
                 </h2>
               </div>
               <p className="text-xs text-slate-500 leading-relaxed">
-                Aktifkan mode <strong>Ultra HD</strong> agar API rendering secara default menghasilkan output klip <strong>4K (2160p)</strong> super tajam dengan upscaling Lanczos + Unsharp. Jika dimatikan, render otomatis menggunakan <strong>1080p Full HD</strong>.
+                Aktifkan mode <strong>Ultra HD</strong> agar API rendering secara default memilih output klip <strong>4K (2160p)</strong> jika video sumber beresolusi 4K asli (tanpa upscaling paksa pada sumber 1080p/720p). Jika dimatikan, render otomatis menggunakan <strong>1080p Full HD</strong>.
               </p>
             </div>
 
@@ -281,8 +287,17 @@ export function AutomationSettingsView({
                 className="w-full h-10 px-3 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:border-red-600 focus:outline-none"
               >
                 <option value="1080p">1080p Full HD (Cepat & Tajam)</option>
-                <option value="4k">Ultra HD 4K 2160p (Kejernihan Maksimal)</option>
+                <option value="4k">
+                  {canExport4k
+                    ? 'Ultra HD 4K 2160p (Kejernihan Maksimal)'
+                    : 'Ultra HD 4K 2160p (Khusus Pro/Business)'}
+                </option>
               </select>
+              {!canExport4k && (draft.enableUltraHdRender || draft.defaultRenderQuality === '4k') && (
+                <p className="mt-1.5 text-[11px] font-medium text-amber-800">
+                  Akun paket {planTier.toUpperCase()} saat ini dibatasi hingga 1080p Full HD. Ekspor 4K tersedia mulai paket Pro & Business.
+                </p>
+              )}
             </div>
 
             <div>

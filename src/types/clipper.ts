@@ -622,3 +622,348 @@ export interface AdminOverviewData {
     ffprobeReady: boolean;
   };
 }
+
+// =========================================================================
+// AICLIPER V3 — Intelligent Active Speaker, Intro Studio & Balanced Render
+// =========================================================================
+
+export type BalancedRenderProfile =
+  | 'fast_preview'
+  | 'balanced_1080p'
+  | 'balanced_4k'
+  | 'high_quality';
+
+export type CameraFramingMode =
+  | 'speaker_focus'
+  | 'face_centered'
+  | 'upper_body'
+  | 'dynamic_follow'
+  | 'wide_context'
+  | 'manual_framing';
+
+export type MultiSpeakerLayoutMode =
+  | 'active_speaker_full'
+  | 'split_screen'
+  | 'side_by_side'
+  | 'picture_in_picture'
+  | 'speaker_plus_context'
+  | 'wide_shot';
+
+export interface CameraTrackingSettings {
+  clipId: string;
+  autoMode: boolean;
+  framingMode: CameraFramingMode;
+  multiSpeakerLayout: MultiSpeakerLayoutMode;
+  lockedSpeakerKey: string | null;
+  ignoredSpeakerKeys: string[];
+  trackingSensitivity: number;
+  switchingSensitivity: number;
+  minShotDurationSec: number;
+  confidenceThreshold: number;
+  cooldownSec: number;
+  manualCropX: number;
+  manualCropY: number;
+  manualZoom: number;
+}
+
+export interface FaceTrackCandidate {
+  speakerKey: string;
+  speakerLabel?: string;
+  timeSec: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  mouthActivity: number;
+  trackingConfidence: number;
+  diarizationConfidence?: number;
+  audioActivityOverride?: number;
+  occluded?: boolean;
+}
+
+export interface SpeakerProfile {
+  id: string;
+  clipId: string;
+  speakerKey: string;
+  label: string;
+  colorHex: string;
+  avgCenterX: number;
+  avgCenterY: number;
+  speakingRatio: number;
+  avgConfidence: number;
+  isLocked: boolean;
+  isIgnored: boolean;
+}
+
+export interface SpeakerSegment {
+  id: string;
+  clipId: string;
+  speakerKey: string;
+  startSec: number;
+  endSec: number;
+  audioActivityScore: number;
+  lipSyncScore: number;
+  diarizationScore: number;
+  activeSpeakerScore: number;
+  transcriptExcerpt: string;
+}
+
+export interface CameraTrackingSegment {
+  id: string;
+  clipId: string;
+  startSec: number;
+  endSec: number;
+  activeSpeakerKey: string;
+  framingMode: CameraFramingMode;
+  layoutMode: MultiSpeakerLayoutMode;
+  targetX: number;
+  targetY: number;
+  zoom: number;
+  confidence: number;
+  reason: string;
+  isManualOverride: boolean;
+}
+
+export interface CameraAnalysisResult {
+  clipId: string;
+  durationSec: number;
+  settings: CameraTrackingSettings;
+  speakers: SpeakerProfile[];
+  faceTracks: FaceTrackCandidate[];
+  speakerSegments: SpeakerSegment[];
+  cameraSegments: CameraTrackingSegment[];
+  metrics: {
+    avgConfidence: number;
+    switchCount: number;
+    stabilityScore: number;
+    lowConfidenceFallbackCount: number;
+    multiSpeakerDetected: boolean;
+  };
+}
+
+export interface CameraBenchmarkScenarioResult {
+  scenario: string;
+  precision: number;
+  recall: number;
+  switchAccuracy: number;
+  stabilityScore: number;
+  avgFramingErrorX: number;
+  switchCount: number;
+}
+
+export interface CameraBenchmarkReport {
+  generatedAt: string;
+  methodology: string;
+  overallPrecision: number;
+  overallRecall: number;
+  overallSwitchAccuracy: number;
+  overallStability: number;
+  scenarios: CameraBenchmarkScenarioResult[];
+}
+
+export type IntroTemplateCategory =
+  | 'Viral Hook'
+  | 'Podcast Highlight'
+  | 'Cinematic'
+  | 'Breaking News'
+  | 'Minimalist'
+  | 'Bold Typography'
+  | 'Meme & Fun'
+  | 'Question Hook'
+  | 'Storytelling'
+  | 'Motivation'
+  | 'Educational'
+  | 'Sports'
+  | 'Gaming'
+  | 'Documentary'
+  | 'Luxury/Elegant'
+  | 'Top 3/Listicle'
+  | 'Dramatic Quote'
+  | 'Reaction'
+  | 'Business & Finance'
+  | 'Lifestyle'
+  | 'Technology'
+  | 'Tutorial';
+
+export type IntroAnimationType =
+  | 'fade_in'
+  | 'slide_up'
+  | 'slide_down'
+  | 'slide_left'
+  | 'slide_right'
+  | 'pop_in'
+  | 'zoom_in'
+  | 'zoom_out'
+  | 'typewriter'
+  | 'blur_reveal';
+
+export interface IntroBackgroundConfig {
+  mode: 'solid' | 'gradient' | 'footage' | 'blur_footage' | 'image';
+  primaryColor: string;
+  secondaryColor: string;
+  gradientAngleDeg: number;
+  blurStrength: number;
+  dimOpacity: number;
+  imageUrl?: string;
+}
+
+export interface IntroAudioConfig {
+  enabled: boolean;
+  sfxType: 'none' | 'whoosh' | 'pop' | 'boom' | 'chime' | 'riser';
+  volume: number;
+  fadeInSec: number;
+  fadeOutSec: number;
+  muted: boolean;
+  keepOriginalAudio: boolean;
+}
+
+export interface IntroTextBoxConfig {
+  enabled: boolean;
+  backgroundColor: string;
+  opacity: number;
+  paddingX: number;
+  paddingY: number;
+  borderRadiusPx: number;
+  borderWidthPx: number;
+  borderColor: string;
+  shadowEnabled: boolean;
+}
+
+export interface IntroElementLayer {
+  id: string;
+  type: 'badge' | 'headline' | 'subtitle' | 'shape' | 'custom_text';
+  name: string;
+  text: string;
+  visible: boolean;
+  x: number;
+  y: number;
+  widthPct: number;
+  heightPct: number;
+  fontFamily: OverlayFontFamilyId;
+  fontSizePx: number;
+  fontWeight: number;
+  textColor: string;
+  letterSpacingPx: number;
+  lineHeight: number;
+  textAlign: OverlayTextAlign;
+  opacity: number;
+  rotationDeg: number;
+  shadowEnabled: boolean;
+  shadowColor: string;
+  outlineEnabled: boolean;
+  outlineColor: string;
+  outlineWidthPx: number;
+  textBox: IntroTextBoxConfig;
+  animation: {
+    type: IntroAnimationType;
+    durationSec: number;
+    delaySec: number;
+    direction: 'up' | 'down' | 'left' | 'right' | 'center';
+    easing: 'linear' | 'ease_out' | 'spring';
+    intensity: number;
+  };
+}
+
+export interface IntroTemplateDefinition {
+  id: string;
+  slug: string;
+  name: string;
+  category: IntroTemplateCategory;
+  description: string;
+  isGlobal: boolean;
+  durationSec: number;
+  safeAreaGuides: boolean;
+  snapToCenter: boolean;
+  background: IntroBackgroundConfig;
+  audio: IntroAudioConfig;
+  layers: IntroElementLayer[];
+  currentVersion?: number;
+  updatedAt?: string;
+}
+
+export interface UserIntroTemplateRecord {
+  id: string;
+  userUid: string;
+  baseTemplateId: string | null;
+  name: string;
+  category: IntroTemplateCategory;
+  description: string;
+  durationSec: number;
+  currentVersion: number;
+  config: IntroTemplateDefinition;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface IntroTemplateVersionRecord {
+  id: string;
+  templateId: string;
+  userUid: string;
+  versionNumber: number;
+  changeNote: string;
+  config: IntroTemplateDefinition;
+  createdAt: string;
+}
+
+export interface SourceAssetRecord {
+  id: string;
+  userUid: string;
+  projectId: string;
+  sourceFingerprint: string;
+  storageBackend: 'gcs' | 'local';
+  gcsUri: string;
+  localPath: string;
+  mimeType: string;
+  sizeBytes: number;
+  width: number;
+  height: number;
+  fps: number;
+  durationSec: number;
+  audioChannels: number;
+  createdAt: string;
+}
+
+export interface RenderAssetRecord {
+  id: string;
+  userUid: string;
+  clipId: string;
+  renderJobId: string | null;
+  sourceFingerprint: string;
+  renderFingerprint: string;
+  renderProfile: BalancedRenderProfile;
+  storageBackend: 'gcs' | 'local';
+  gcsUri: string;
+  localPath: string;
+  sizeBytes: number;
+  durationSec: number;
+  width: number;
+  height: number;
+  pipelineVersion: string;
+  createdAt: string;
+}
+
+export interface JobEventRecord {
+  id: string;
+  jobId: string;
+  jobType: string;
+  userUid: string;
+  stage: string;
+  status: string;
+  message: string;
+  durationMs: number;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface PerformanceMetricRecord {
+  id: string;
+  userUid: string;
+  category: string;
+  operation: string;
+  durationMs: number;
+  success: boolean;
+  cacheHit: boolean;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+}
+

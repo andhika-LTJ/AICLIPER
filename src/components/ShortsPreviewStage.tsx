@@ -13,10 +13,12 @@ import {
   Youtube,
 } from 'lucide-react';
 import type {
+  BalancedRenderProfile,
   ClipOverlayStyle,
   ClipRenderLayout,
   ClipRenderQuality,
   EmotionSfxStyle,
+  PlanTier,
   PodcastClip,
   PodcastEpisode,
   StudioStoreState,
@@ -76,10 +78,13 @@ interface ShortsPreviewStageProps {
   defaultEmotionEffectsEnabled: boolean;
   defaultAiIntroEnabled: boolean;
   ultraHdEnabled: boolean;
+  maxExportQuality?: ClipRenderQuality;
+  planTier?: PlanTier;
   isAuthenticated?: boolean;
   canManageCookies?: boolean;
   onSaveTrim: (clipId: string, startSec: number, endSec: number) => Promise<void>;
   onSaveOverlayStyle: (clipId: string, overlayStyle: ClipOverlayStyle) => Promise<void>;
+  onOpenV3Studio?: (tab: 'camera' | 'intro') => void;
   onStoreUpdate: (nextStore: StudioStoreState) => void;
 }
 
@@ -91,12 +96,16 @@ export function ShortsPreviewStage({
   defaultEmotionEffectsEnabled,
   defaultAiIntroEnabled,
   ultraHdEnabled,
+  maxExportQuality = '1080p',
+  planTier = 'free',
   isAuthenticated = false,
   canManageCookies = false,
   onSaveTrim,
   onSaveOverlayStyle,
+  onOpenV3Studio,
   onStoreUpdate,
 }: ShortsPreviewStageProps) {
+  const canExport4k = maxExportQuality === '4k';
   const [previewMode, setPreviewMode] = useState<'vertical' | 'youtube'>('vertical');
   const [isOverlayEditorOpen, setIsOverlayEditorOpen] = useState(false);
   const [startInput, setStartInput] = useState(formatTimestamp(clip.startSec));
@@ -114,6 +123,11 @@ export function ShortsPreviewStage({
   const [renderQuality, setRenderQuality] = useState<ClipRenderQuality>(
     () => clip.renderedQuality ?? defaultRenderQuality
   );
+  const [renderProfile, setRenderProfile] = useState<BalancedRenderProfile>(
+    () =>
+      clip.renderProfile ??
+      ((clip.renderedQuality ?? defaultRenderQuality) === '4k' ? 'balanced_4k' : 'balanced_1080p')
+  );
   const [enableEmotionEffects, setEnableEmotionEffects] = useState<boolean>(
     () => clip.emotionEffectsEnabled ?? defaultEmotionEffectsEnabled
   );
@@ -122,6 +136,7 @@ export function ShortsPreviewStage({
   );
   const [renderError, setRenderError] = useState<string | null>(null);
   const [renderErrorCode, setRenderErrorCode] = useState<string | null>(null);
+  const [lastUpscaleNotice, setLastUpscaleNotice] = useState<string | null>(null);
   const [isClearingQueue, setIsClearingQueue] = useState(false);
   const [needsSourceOrCookies, setNeedsSourceOrCookies] = useState(false);
   const [isUploadingSource, setIsUploadingSource] = useState(false);
@@ -160,6 +175,10 @@ export function ShortsPreviewStage({
   const clipDuration = Math.max(5, clip.endSec - clip.startSec);
 
   useEffect(() => {
+    setLastUpscaleNotice(null);
+  }, [clip.id]);
+
+  useEffect(() => {
     setStartInput(formatTimestamp(clip.startSec));
     setEndInput(formatTimestamp(clip.endSec));
     setTrimError(null);
@@ -171,6 +190,12 @@ export function ShortsPreviewStage({
       clip.renderedLayout ? normalizeUiLayout(clip.renderedLayout) : defaultRenderLayout
     );
     setRenderQuality(clip.renderedQuality ?? defaultRenderQuality);
+    setRenderProfile(
+      clip.renderProfile ??
+        ((clip.renderedQuality ?? defaultRenderQuality) === '4k'
+          ? 'balanced_4k'
+          : 'balanced_1080p')
+    );
     setEnableEmotionEffects(clip.emotionEffectsEnabled ?? defaultEmotionEffectsEnabled);
     setEnableAiIntro(clip.introEnabled ?? defaultAiIntroEnabled);
     setDirectUrlDraft(episode.directVideoUrl ?? '');
@@ -181,6 +206,7 @@ export function ShortsPreviewStage({
     clip.renderedClipUrl,
     clip.renderedLayout,
     clip.renderedQuality,
+    clip.renderProfile,
     clip.emotionEffectsEnabled,
     clip.introEnabled,
     episode.id,
@@ -260,14 +286,25 @@ export function ShortsPreviewStage({
     setIsRenderingMp4(true);
     setRenderError(null);
     setRenderErrorCode(null);
+    setLastUpscaleNotice(null);
     setRenderStage('Menyiapkan proses render...');
     setRenderProgress(5);
     setRenderElapsedSec(0);
     try {
+      const requestedQuality = overrideQuality ?? renderQuality;
+      const requestedProfile =
+        overrideQuality === '1080p' && renderProfile === 'balanced_4k'
+          ? 'balanced_1080p'
+          : overrideQuality === '4k' && renderProfile !== 'balanced_4k'
+            ? 'balanced_4k'
+            : renderProfile;
       const data = await runRenderClipJob({
         clipId: clip.id,
         layout: overrideLayout ?? renderLayout,
-        quality: overrideQuality ?? renderQuality,
+        quality: requestedQuality,
+        renderProfile: requestedProfile,
+        cameraSettings: clip.cameraTrackingSettings,
+        introTemplateConfig: clip.introTemplateConfig,
         enableEmotionEffects,
         enableAiIntro,
         overlayStyle: overrideOverlayStyle ?? clip.overlayStyle,
@@ -287,6 +324,7 @@ export function ShortsPreviewStage({
         },
       });
       setNeedsSourceOrCookies(false);
+      setLastUpscaleNotice(data.upscalePrevented && data.upscaleNote ? data.upscaleNote : null);
       if (data.store) {
         onStoreUpdate(data.store);
       }
@@ -858,13 +896,92 @@ export function ShortsPreviewStage({
               id="render-quality-select"
               aria-label="Kualitas resolusi render MP4"
               value={renderQuality}
-              onChange={(e) => setRenderQuality(e.target.value as ClipRenderQuality)}
+              onChange={(e) => {
+                const nextQ = e.target.value as ClipRenderQuality;
+                setRenderQuality(nextQ);
+                setRenderProfile(nextQ === '4k' ? 'balanced_4k' : 'balanced_1080p');
+              }}
               className="w-full h-9 px-2.5 text-xs bg-slate-50 border border-slate-200 rounded-lg text-slate-700 focus:border-slate-900 focus:outline-none"
             >
               <option value="1080p">1080p Full HD (Jernih & Tajam)</option>
-              <option value="4k">4K Ultra HD 2160p (Kejernihan Maksimal)</option>
+              <option value="4k">
+                {canExport4k
+                  ? '4K Ultra HD 2160p (Kejernihan Maksimal)'
+                  : '4K Ultra HD 2160p (Khusus Pro/Business)'}
+              </option>
+            </select>
+            {!canExport4k && (renderQuality === '4k' || renderProfile === 'balanced_4k') && (
+              <div
+                role="note"
+                className="mt-1.5 p-2.5 rounded-lg bg-amber-50 border border-amber-200 text-[11px] text-amber-950 leading-relaxed flex flex-wrap items-center justify-between gap-2"
+              >
+                <span>
+                  Paket akun Anda (<strong>{planTier.toUpperCase()}</strong>) mendukung ekspor hingga{' '}
+                  <strong>1080p Full HD</strong>. Ekspor <strong>4K Ultra HD</strong> tersedia untuk paket{' '}
+                  <strong>Pro / Business</strong>.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRenderQuality('1080p');
+                    setRenderProfile('balanced_1080p');
+                  }}
+                  className="px-2.5 py-1 rounded bg-white border border-amber-300 font-semibold text-amber-950 hover:bg-amber-100 cursor-pointer whitespace-nowrap"
+                >
+                  Gunakan 1080p Full HD
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-1">
+            <label
+              htmlFor="render-profile-select"
+              className="block text-xs font-medium text-slate-700"
+            >
+              Strategi & Profil Render (Balanced)
+            </label>
+            <select
+              id="render-profile-select"
+              aria-label="Strategi profil render Balanced"
+              value={renderProfile}
+              onChange={(e) => {
+                const nextProf = e.target.value as BalancedRenderProfile;
+                setRenderProfile(nextProf);
+                if (nextProf === 'balanced_4k') setRenderQuality('4k');
+                else setRenderQuality('1080p');
+              }}
+              className="w-full h-9 px-2.5 text-xs bg-slate-50 border border-slate-200 rounded-lg text-slate-700 focus:border-slate-900 focus:outline-none"
+            >
+              <option value="balanced_1080p">Balanced 1080p (Direkomendasikan · 30fps)</option>
+              <option value="fast_preview">Fast Preview 720p (Cepat Cek Kamera & Intro)</option>
+              <option value="balanced_4k">
+                {canExport4k
+                  ? 'Balanced 4K Ultra HD (2160p · Bitrate Terkontrol)'
+                  : 'Balanced 4K Ultra HD (Khusus Pro/Business)'}
+              </option>
+              <option value="high_quality">High Quality 1080p 60fps (CRF Rendah)</option>
             </select>
           </div>
+
+          {onOpenV3Studio && (
+            <div className="grid grid-cols-2 gap-2 pt-0.5">
+              <button
+                type="button"
+                onClick={() => onOpenV3Studio('camera')}
+                className="h-8 px-2.5 text-[11px] font-semibold text-slate-800 bg-white border border-slate-300 hover:border-slate-900 rounded-lg cursor-pointer whitespace-nowrap truncate"
+              >
+                Kamera Pembicara AI
+              </button>
+              <button
+                type="button"
+                onClick={() => onOpenV3Studio('intro')}
+                className="h-8 px-2.5 text-[11px] font-semibold text-slate-800 bg-white border border-slate-300 hover:border-slate-900 rounded-lg cursor-pointer whitespace-nowrap truncate"
+              >
+                Studio Intro 22 Kategori
+              </button>
+            </div>
+          )}
 
           <div className="flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg bg-slate-50 border border-slate-200">
             <div className="min-w-0">
@@ -1068,12 +1185,36 @@ export function ShortsPreviewStage({
           </p>
         )}
 
+        {lastUpscaleNotice && (
+          <div
+            role="status"
+            className="p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-[11px] font-medium text-slate-700 leading-relaxed"
+          >
+            {lastUpscaleNotice}
+          </div>
+        )}
+
         {renderError && (
           <div
             role="alert"
             className="p-2.5 bg-red-50 border border-red-200 rounded-lg text-xs font-medium text-red-700 leading-relaxed space-y-2"
           >
             <p>{renderError}</p>
+            {(renderErrorCode === 'PLAN_4K_LOCKED' ||
+              renderError.includes('4K Ultra HD tersedia untuk paket')) && (
+              <button
+                type="button"
+                disabled={isRenderingMp4}
+                onClick={() => {
+                  setRenderQuality('1080p');
+                  setRenderProfile('balanced_1080p');
+                  void handleRenderMp4(renderLayout, '1080p', true);
+                }}
+                className="inline-flex items-center justify-center h-7 px-2.5 text-[11px] font-semibold text-red-700 bg-white border border-red-300 hover:bg-red-100 rounded-md cursor-pointer disabled:opacity-60"
+              >
+                Switch ke 1080p & Render
+              </button>
+            )}
             {(renderErrorCode === 'RATE_LIMITED' ||
               renderError.includes('429') ||
               renderError.toLowerCase().includes('sibuk') ||

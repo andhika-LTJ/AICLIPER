@@ -1,9 +1,11 @@
+import 'dotenv/config';
 import { defineConfig } from 'drizzle-kit';
 
 export default defineConfig({
   schema: './src/db/schema.ts',
   out: './migrations/drizzle',
   dialect: 'postgresql',
+  schemaFilter: ['public'],
   dbCredentials: {
     host: process.env.SQL_HOST || '127.0.0.1',
     port: Number(process.env.SQL_PORT) || 5432,
@@ -12,4 +14,5 @@ export default defineConfig({
     database: process.env.SQL_DB_NAME || 'aicliper',
     ssl: false,
   },
+  verbose: true,
 });

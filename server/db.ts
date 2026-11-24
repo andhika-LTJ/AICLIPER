@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { DatabaseSync } from 'node:sqlite';
@@ -5,13 +6,29 @@ import { INITIAL_STUDIO_STATE } from '../src/data/seedPodcasts.ts';
 import type {
   AccountStatus,
   AppNotification,
+  BalancedRenderProfile,
   BotAutomationConfig,
+  CameraFramingMode,
+  CameraTrackingSegment,
+  CameraTrackingSettings,
   DistributionLog,
+  FaceTrackCandidate,
+  IntroTemplateCategory,
+  IntroTemplateDefinition,
+  IntroTemplateVersionRecord,
+  JobEventRecord,
+  MultiSpeakerLayoutMode,
+  PerformanceMetricRecord,
   PersistedRenderJobSummary,
   PlanTier,
   PodcastClip,
   PodcastEpisode,
+  RenderAssetRecord,
+  SourceAssetRecord,
+  SpeakerProfile,
+  SpeakerSegment,
   StudioStoreState,
+  UserIntroTemplateRecord,
   UserProfileData,
   UserRole,
 } from '../src/types/clipper.ts';
@@ -165,6 +182,19 @@ export function getCurrentPeriodYm(date = new Date()): string {
   const y = date.getUTCFullYear();
   const m = String(date.getUTCMonth() + 1).padStart(2, '0');
   return `${y}-${m}`;
+}
+
+function cryptoRandomId(): string {
+  return crypto.randomBytes(8).toString('hex');
+}
+
+function safeParseJson<T>(raw: string | null | undefined, fallback: T): T {
+  if (!raw) return fallback;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
 }
 
 function normalizeAutomation(rawAuto: Partial<BotAutomationConfig> | null | undefined): BotAutomationConfig {
@@ -676,6 +706,207 @@ export class KlipCastDatabase {
           );
       });
     }
+
+    const v3Applied = this.db
+      .prepare('SELECT version FROM schema_migrations WHERE version = ?')
+      .get('003_aicliper_3_0_v3_tables') as { version: string } | undefined;
+
+    if (!v3Applied) {
+      this.transaction(() => {
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS source_assets (
+            id TEXT PRIMARY KEY,
+            user_uid TEXT NOT NULL REFERENCES users(uid) ON DELETE CASCADE,
+            project_id TEXT NOT NULL,
+            source_fingerprint TEXT NOT NULL,
+            storage_backend TEXT NOT NULL DEFAULT 'local',
+            gcs_uri TEXT NOT NULL DEFAULT '',
+            local_path TEXT NOT NULL DEFAULT '',
+            mime_type TEXT NOT NULL DEFAULT 'video/mp4',
+            size_bytes INTEGER NOT NULL DEFAULT 0,
+            width INTEGER NOT NULL DEFAULT 0,
+            height INTEGER NOT NULL DEFAULT 0,
+            fps REAL NOT NULL DEFAULT 30,
+            duration_sec REAL NOT NULL DEFAULT 0,
+            audio_channels INTEGER NOT NULL DEFAULT 2,
+            created_at TEXT NOT NULL,
+            UNIQUE (user_uid, source_fingerprint)
+          );
+          CREATE INDEX IF NOT EXISTS idx_sqlite_source_assets_fp ON source_assets(user_uid, source_fingerprint);
+
+          CREATE TABLE IF NOT EXISTS speaker_profiles (
+            id TEXT PRIMARY KEY,
+            clip_id TEXT NOT NULL REFERENCES clips(id) ON DELETE CASCADE,
+            user_uid TEXT NOT NULL REFERENCES users(uid) ON DELETE CASCADE,
+            speaker_key TEXT NOT NULL,
+            label TEXT NOT NULL,
+            color_hex TEXT NOT NULL DEFAULT '#F59E0B',
+            avg_center_x REAL NOT NULL DEFAULT 0.5,
+            avg_center_y REAL NOT NULL DEFAULT 0.4,
+            speaking_ratio REAL NOT NULL DEFAULT 0,
+            avg_confidence REAL NOT NULL DEFAULT 0,
+            is_locked INTEGER NOT NULL DEFAULT 0,
+            is_ignored INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL,
+            UNIQUE (clip_id, speaker_key)
+          );
+          CREATE INDEX IF NOT EXISTS idx_sqlite_speaker_profiles_clip ON speaker_profiles(clip_id);
+
+          CREATE TABLE IF NOT EXISTS speaker_segments (
+            id TEXT PRIMARY KEY,
+            clip_id TEXT NOT NULL REFERENCES clips(id) ON DELETE CASCADE,
+            speaker_key TEXT NOT NULL,
+            start_sec REAL NOT NULL,
+            end_sec REAL NOT NULL,
+            audio_activity_score REAL NOT NULL DEFAULT 0,
+            lip_sync_score REAL NOT NULL DEFAULT 0,
+            diarization_score REAL NOT NULL DEFAULT 0,
+            active_speaker_score REAL NOT NULL DEFAULT 0,
+            transcript_excerpt TEXT NOT NULL DEFAULT ''
+          );
+          CREATE INDEX IF NOT EXISTS idx_sqlite_speaker_segments_clip ON speaker_segments(clip_id, start_sec);
+
+          CREATE TABLE IF NOT EXISTS face_tracks (
+            id TEXT PRIMARY KEY,
+            clip_id TEXT NOT NULL REFERENCES clips(id) ON DELETE CASCADE,
+            speaker_key TEXT NOT NULL,
+            speaker_label TEXT NOT NULL DEFAULT '',
+            time_sec REAL NOT NULL,
+            x REAL NOT NULL,
+            y REAL NOT NULL,
+            width REAL NOT NULL,
+            height REAL NOT NULL,
+            mouth_activity REAL NOT NULL DEFAULT 0,
+            tracking_confidence REAL NOT NULL DEFAULT 0,
+            diarization_confidence REAL NOT NULL DEFAULT 0.6,
+            occluded INTEGER NOT NULL DEFAULT 0
+          );
+          CREATE INDEX IF NOT EXISTS idx_sqlite_face_tracks_clip ON face_tracks(clip_id, time_sec);
+
+          CREATE TABLE IF NOT EXISTS camera_tracking_segments (
+            id TEXT PRIMARY KEY,
+            clip_id TEXT NOT NULL REFERENCES clips(id) ON DELETE CASCADE,
+            user_uid TEXT NOT NULL REFERENCES users(uid) ON DELETE CASCADE,
+            start_sec REAL NOT NULL,
+            end_sec REAL NOT NULL,
+            active_speaker_key TEXT NOT NULL DEFAULT 'none',
+            framing_mode TEXT NOT NULL DEFAULT 'speaker_focus',
+            layout_mode TEXT NOT NULL DEFAULT 'active_speaker_full',
+            target_x REAL NOT NULL DEFAULT 0.5,
+            target_y REAL NOT NULL DEFAULT 0.4,
+            zoom REAL NOT NULL DEFAULT 1.0,
+            confidence REAL NOT NULL DEFAULT 0,
+            reason TEXT NOT NULL DEFAULT 'auto_active_speaker',
+            is_manual_override INTEGER NOT NULL DEFAULT 0
+          );
+          CREATE INDEX IF NOT EXISTS idx_sqlite_camera_segments_clip ON camera_tracking_segments(clip_id, start_sec);
+
+          CREATE TABLE IF NOT EXISTS camera_tracking_settings (
+            clip_id TEXT PRIMARY KEY REFERENCES clips(id) ON DELETE CASCADE,
+            user_uid TEXT NOT NULL REFERENCES users(uid) ON DELETE CASCADE,
+            auto_mode INTEGER NOT NULL DEFAULT 1,
+            framing_mode TEXT NOT NULL DEFAULT 'speaker_focus',
+            multi_speaker_layout TEXT NOT NULL DEFAULT 'active_speaker_full',
+            locked_speaker_key TEXT,
+            ignored_speaker_keys_json TEXT NOT NULL DEFAULT '[]',
+            tracking_sensitivity REAL NOT NULL DEFAULT 0.65,
+            switching_sensitivity REAL NOT NULL DEFAULT 0.55,
+            min_shot_duration_sec REAL NOT NULL DEFAULT 2.4,
+            confidence_threshold REAL NOT NULL DEFAULT 0.48,
+            cooldown_sec REAL NOT NULL DEFAULT 1.2,
+            manual_crop_x REAL NOT NULL DEFAULT 0.5,
+            manual_crop_y REAL NOT NULL DEFAULT 0.4,
+            manual_zoom REAL NOT NULL DEFAULT 1.0,
+            updated_at TEXT NOT NULL
+          );
+
+          CREATE TABLE IF NOT EXISTS user_intro_templates (
+            id TEXT PRIMARY KEY,
+            user_uid TEXT NOT NULL REFERENCES users(uid) ON DELETE CASCADE,
+            base_template_id TEXT,
+            name TEXT NOT NULL,
+            category TEXT NOT NULL DEFAULT 'Viral Hook',
+            description TEXT NOT NULL DEFAULT '',
+            duration_sec REAL NOT NULL DEFAULT 2.0,
+            current_version INTEGER NOT NULL DEFAULT 1,
+            config_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+          );
+          CREATE INDEX IF NOT EXISTS idx_sqlite_user_intro_tpl ON user_intro_templates(user_uid, updated_at DESC);
+
+          CREATE TABLE IF NOT EXISTS intro_template_versions (
+            id TEXT PRIMARY KEY,
+            template_id TEXT NOT NULL REFERENCES user_intro_templates(id) ON DELETE CASCADE,
+            user_uid TEXT NOT NULL REFERENCES users(uid) ON DELETE CASCADE,
+            version_number INTEGER NOT NULL,
+            change_note TEXT NOT NULL DEFAULT '',
+            config_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE (template_id, version_number)
+          );
+          CREATE INDEX IF NOT EXISTS idx_sqlite_intro_versions_tpl ON intro_template_versions(template_id, version_number DESC);
+
+          CREATE TABLE IF NOT EXISTS render_assets (
+            id TEXT PRIMARY KEY,
+            user_uid TEXT NOT NULL REFERENCES users(uid) ON DELETE CASCADE,
+            clip_id TEXT NOT NULL DEFAULT '',
+            render_job_id TEXT,
+            source_fingerprint TEXT NOT NULL,
+            render_fingerprint TEXT NOT NULL,
+            render_profile TEXT NOT NULL DEFAULT 'balanced_1080p',
+            storage_backend TEXT NOT NULL DEFAULT 'local',
+            gcs_uri TEXT NOT NULL DEFAULT '',
+            local_path TEXT NOT NULL DEFAULT '',
+            size_bytes INTEGER NOT NULL DEFAULT 0,
+            duration_sec REAL NOT NULL DEFAULT 0,
+            width INTEGER NOT NULL DEFAULT 1080,
+            height INTEGER NOT NULL DEFAULT 1920,
+            pipeline_version TEXT NOT NULL DEFAULT 'v3.0-balanced',
+            created_at TEXT NOT NULL,
+            UNIQUE (user_uid, render_fingerprint)
+          );
+          CREATE INDEX IF NOT EXISTS idx_sqlite_render_assets_fp ON render_assets(user_uid, render_fingerprint);
+
+          CREATE TABLE IF NOT EXISTS job_events (
+            id TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL,
+            job_type TEXT NOT NULL DEFAULT 'render',
+            user_uid TEXT NOT NULL DEFAULT '',
+            stage TEXT NOT NULL,
+            status TEXT NOT NULL,
+            message TEXT NOT NULL DEFAULT '',
+            duration_ms INTEGER NOT NULL DEFAULT 0,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+          );
+          CREATE INDEX IF NOT EXISTS idx_sqlite_job_events_job ON job_events(job_id, created_at ASC);
+
+          CREATE TABLE IF NOT EXISTS performance_metrics (
+            id TEXT PRIMARY KEY,
+            user_uid TEXT NOT NULL DEFAULT '',
+            category TEXT NOT NULL,
+            operation TEXT NOT NULL,
+            duration_ms INTEGER NOT NULL DEFAULT 0,
+            success INTEGER NOT NULL DEFAULT 1,
+            cache_hit INTEGER NOT NULL DEFAULT 0,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+          );
+          CREATE INDEX IF NOT EXISTS idx_sqlite_perf_metrics_cat ON performance_metrics(category, created_at DESC);
+        `);
+
+        this.db
+          .prepare(
+            'INSERT INTO schema_migrations (version, description, applied_at) VALUES (?, ?, ?)'
+          )
+          .run(
+            '003_aicliper_3_0_v3_tables',
+            'Add AICLIPER V3 tables for active speaker tracking, camera segments, intro templates + versioning, render asset fingerprint cache, job events, and performance metrics',
+            nowIso()
+          );
+      });
+    }
   }
 
   // ---------- USERS, PROFILES & SETTINGS ----------
@@ -782,10 +1013,20 @@ export class KlipCastDatabase {
           )
           .run(params.uid, JSON.stringify(INITIAL_STUDIO_STATE.automation), now);
 
-        this.ensureSubscription(
+        const isPrivileged =
+          params.resolvedRole === 'super_admin' || params.resolvedRole === 'admin';
+        const sub = this.ensureSubscription(
           params.uid,
-          params.resolvedRole === 'super_admin' ? 'business' : 'free'
+          isPrivileged ? 'business' : 'free'
         );
+        if (
+          isPrivileged &&
+          (sub.plan_tier === 'free' ||
+            sub.plan_tier === 'starter' ||
+            sub.max_export_quality !== '4k')
+        ) {
+          this.updateUserPlan(params.uid, 'business');
+        }
       }
 
       return this.db
@@ -1453,6 +1694,57 @@ export class KlipCastDatabase {
       updatedAt: r.updated_at,
       completedAt: r.completed_at,
     }));
+  }
+
+  getRenderJobById(jobId: string): PersistedRenderJobSummary | null {
+    const r = this.db
+      .prepare(
+        `SELECT r.*, u.email AS user_email
+         FROM render_jobs r
+         LEFT JOIN users u ON u.uid = r.user_uid
+         WHERE r.job_id = ?`
+      )
+      .get(jobId) as
+      | {
+          job_id: string;
+          clip_id: string;
+          user_uid: string;
+          user_email: string | null;
+          layout: string;
+          quality: string;
+          status: PersistedRenderJobSummary['status'];
+          stage: string;
+          progress: number;
+          retry_count: number;
+          duration_ms: number | null;
+          output_size_bytes: number | null;
+          error_message: string | null;
+          error_code: string | null;
+          created_at: string;
+          updated_at: string;
+          completed_at: string | null;
+        }
+      | undefined;
+    if (!r) return null;
+    return {
+      jobId: r.job_id,
+      clipId: r.clip_id,
+      userUid: r.user_uid,
+      userEmail: r.user_email,
+      layout: r.layout,
+      quality: r.quality,
+      status: r.status,
+      stage: r.stage,
+      progress: r.progress,
+      retryCount: r.retry_count,
+      durationMs: r.duration_ms,
+      outputSizeBytes: r.output_size_bytes,
+      error: r.error_message,
+      errorCode: r.error_code,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+      completedAt: r.completed_at,
+    };
   }
 
   // ---------- UPLOAD JOBS ----------
@@ -2125,6 +2417,895 @@ export class KlipCastDatabase {
       sizeBytes: Buffer.byteLength(serialized, 'utf-8'),
       createdAt: snapshot.createdAt,
     };
+  }
+
+  // =========================================================================
+  // AICLIPER V3 METHODS (STAGED LOCAL FALLBACK + TELEMETRY / FINGERPRINTING)
+  // =========================================================================
+
+  recordJobEvent(params: {
+    jobId: string;
+    jobType: string;
+    userUid: string;
+    stage: string;
+    status: string;
+    message: string;
+    durationMs?: number;
+    metadata?: Record<string, unknown>;
+  }): JobEventRecord {
+    const id = `je_${cryptoRandomId()}`;
+    const createdAt = nowIso();
+    this.db
+      .prepare(
+        `INSERT INTO job_events (id, job_id, job_type, user_uid, stage, status, message, duration_ms, metadata_json, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        id,
+        params.jobId,
+        params.jobType,
+        params.userUid,
+        params.stage,
+        params.status,
+        params.message,
+        Math.max(0, Math.round(params.durationMs ?? 0)),
+        JSON.stringify(params.metadata ?? {}),
+        createdAt
+      );
+    return {
+      id,
+      jobId: params.jobId,
+      jobType: params.jobType,
+      userUid: params.userUid,
+      stage: params.stage,
+      status: params.status,
+      message: params.message,
+      durationMs: Math.max(0, Math.round(params.durationMs ?? 0)),
+      metadata: params.metadata ?? {},
+      createdAt,
+    };
+  }
+
+  listJobEvents(jobId: string, userUid?: string): JobEventRecord[] {
+    const rows = (
+      userUid
+        ? this.db
+            .prepare(
+              'SELECT * FROM job_events WHERE job_id = ? AND user_uid = ? ORDER BY created_at ASC'
+            )
+            .all(jobId, userUid)
+        : this.db
+            .prepare('SELECT * FROM job_events WHERE job_id = ? ORDER BY created_at ASC')
+            .all(jobId)
+    ) as Array<{
+      id: string;
+      job_id: string;
+      job_type: string;
+      user_uid: string;
+      stage: string;
+      status: string;
+      message: string;
+      duration_ms: number;
+      metadata_json: string;
+      created_at: string;
+    }>;
+    return rows.map((r) => ({
+      id: r.id,
+      jobId: r.job_id,
+      jobType: r.job_type,
+      userUid: r.user_uid,
+      stage: r.stage,
+      status: r.status,
+      message: r.message,
+      durationMs: r.duration_ms,
+      metadata: safeParseJson<Record<string, unknown>>(r.metadata_json, {}),
+      createdAt: r.created_at,
+    }));
+  }
+
+  recordPerformanceMetric(params: {
+    userUid: string;
+    category: string;
+    operation: string;
+    durationMs: number;
+    success: boolean;
+    cacheHit: boolean;
+    metadata?: Record<string, unknown>;
+  }): PerformanceMetricRecord {
+    const id = `pm_${cryptoRandomId()}`;
+    const createdAt = nowIso();
+    this.db
+      .prepare(
+        `INSERT INTO performance_metrics (id, user_uid, category, operation, duration_ms, success, cache_hit, metadata_json, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        id,
+        params.userUid,
+        params.category,
+        params.operation,
+        Math.max(0, Math.round(params.durationMs)),
+        params.success ? 1 : 0,
+        params.cacheHit ? 1 : 0,
+        JSON.stringify(params.metadata ?? {}),
+        createdAt
+      );
+    return {
+      id,
+      userUid: params.userUid,
+      category: params.category,
+      operation: params.operation,
+      durationMs: Math.max(0, Math.round(params.durationMs)),
+      success: params.success,
+      cacheHit: params.cacheHit,
+      metadata: params.metadata ?? {},
+      createdAt,
+    };
+  }
+
+  listPerformanceMetrics(userUid?: string, limit = 100): PerformanceMetricRecord[] {
+    const safeLimit = Math.min(300, Math.max(1, limit));
+    const rows = (
+      userUid
+        ? this.db
+            .prepare(
+              'SELECT * FROM performance_metrics WHERE user_uid = ? ORDER BY created_at DESC LIMIT ?'
+            )
+            .all(userUid, safeLimit)
+        : this.db
+            .prepare('SELECT * FROM performance_metrics ORDER BY created_at DESC LIMIT ?')
+            .all(safeLimit)
+    ) as Array<{
+      id: string;
+      user_uid: string;
+      category: string;
+      operation: string;
+      duration_ms: number;
+      success: number;
+      cache_hit: number;
+      metadata_json: string;
+      created_at: string;
+    }>;
+    return rows.map((r) => ({
+      id: r.id,
+      userUid: r.user_uid,
+      category: r.category,
+      operation: r.operation,
+      durationMs: r.duration_ms,
+      success: Boolean(r.success),
+      cacheHit: Boolean(r.cache_hit),
+      metadata: safeParseJson<Record<string, unknown>>(r.metadata_json, {}),
+      createdAt: r.created_at,
+    }));
+  }
+
+  findSourceAssetByFingerprint(userUid: string, sourceFingerprint: string): SourceAssetRecord | null {
+    const row = this.db
+      .prepare('SELECT * FROM source_assets WHERE user_uid = ? AND source_fingerprint = ?')
+      .get(userUid, sourceFingerprint) as
+      | {
+          id: string;
+          user_uid: string;
+          project_id: string;
+          source_fingerprint: string;
+          storage_backend: string;
+          gcs_uri: string;
+          local_path: string;
+          mime_type: string;
+          size_bytes: number;
+          width: number;
+          height: number;
+          fps: number;
+          duration_sec: number;
+          audio_channels: number;
+          created_at: string;
+        }
+      | undefined;
+    if (!row) return null;
+    return {
+      id: row.id,
+      userUid: row.user_uid,
+      projectId: row.project_id,
+      sourceFingerprint: row.source_fingerprint,
+      storageBackend: row.storage_backend === 'gcs' ? 'gcs' : 'local',
+      gcsUri: row.gcs_uri,
+      localPath: row.local_path,
+      mimeType: row.mime_type,
+      sizeBytes: row.size_bytes,
+      width: row.width,
+      height: row.height,
+      fps: row.fps,
+      durationSec: row.duration_sec,
+      audioChannels: row.audio_channels,
+      createdAt: row.created_at,
+    };
+  }
+
+  upsertSourceAsset(params: Omit<SourceAssetRecord, 'id' | 'createdAt'>): SourceAssetRecord {
+    const id = `sa_${cryptoRandomId()}`;
+    const createdAt = nowIso();
+    this.db
+      .prepare(
+        `INSERT INTO source_assets (
+           id, user_uid, project_id, source_fingerprint, storage_backend, gcs_uri, local_path,
+           mime_type, size_bytes, width, height, fps, duration_sec, audio_channels, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (user_uid, source_fingerprint) DO UPDATE SET
+           storage_backend = excluded.storage_backend,
+           gcs_uri = excluded.gcs_uri,
+           local_path = excluded.local_path,
+           size_bytes = excluded.size_bytes,
+           width = excluded.width,
+           height = excluded.height,
+           fps = excluded.fps,
+           duration_sec = excluded.duration_sec`
+      )
+      .run(
+        id,
+        params.userUid,
+        params.projectId,
+        params.sourceFingerprint,
+        params.storageBackend,
+        params.gcsUri,
+        params.localPath,
+        params.mimeType,
+        params.sizeBytes,
+        params.width,
+        params.height,
+        params.fps,
+        params.durationSec,
+        params.audioChannels,
+        createdAt
+      );
+    return this.findSourceAssetByFingerprint(params.userUid, params.sourceFingerprint)!;
+  }
+
+  findRenderAssetByFingerprint(userUid: string, renderFingerprint: string): RenderAssetRecord | null {
+    const row = this.db
+      .prepare('SELECT * FROM render_assets WHERE user_uid = ? AND render_fingerprint = ?')
+      .get(userUid, renderFingerprint) as
+      | {
+          id: string;
+          user_uid: string;
+          clip_id: string;
+          render_job_id: string | null;
+          source_fingerprint: string;
+          render_fingerprint: string;
+          render_profile: string;
+          storage_backend: string;
+          gcs_uri: string;
+          local_path: string;
+          size_bytes: number;
+          duration_sec: number;
+          width: number;
+          height: number;
+          pipeline_version: string;
+          created_at: string;
+        }
+      | undefined;
+    if (!row) return null;
+    return {
+      id: row.id,
+      userUid: row.user_uid,
+      clipId: row.clip_id,
+      renderJobId: row.render_job_id,
+      sourceFingerprint: row.source_fingerprint,
+      renderFingerprint: row.render_fingerprint,
+      renderProfile: (row.render_profile || 'balanced_1080p') as BalancedRenderProfile,
+      storageBackend: row.storage_backend === 'gcs' ? 'gcs' : 'local',
+      gcsUri: row.gcs_uri,
+      localPath: row.local_path,
+      sizeBytes: row.size_bytes,
+      durationSec: row.duration_sec,
+      width: row.width,
+      height: row.height,
+      pipelineVersion: row.pipeline_version,
+      createdAt: row.created_at,
+    };
+  }
+
+  upsertRenderAsset(params: {
+    userUid: string;
+    clipId: string;
+    renderJobId?: string | null;
+    sourceFingerprint: string;
+    renderFingerprint: string;
+    renderProfile: BalancedRenderProfile;
+    storageBackend: 'gcs' | 'local';
+    gcsUri: string;
+    localPath: string;
+    sizeBytes: number;
+    durationSec: number;
+    width: number;
+    height: number;
+    pipelineVersion?: string;
+  }): RenderAssetRecord {
+    const id = `ra_${cryptoRandomId()}`;
+    const createdAt = nowIso();
+    const pipelineVersion = params.pipelineVersion || 'v3.0-balanced';
+    this.db
+      .prepare(
+        `INSERT INTO render_assets (
+           id, user_uid, clip_id, render_job_id, source_fingerprint, render_fingerprint,
+           render_profile, storage_backend, gcs_uri, local_path, size_bytes, duration_sec,
+           width, height, pipeline_version, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (user_uid, render_fingerprint) DO UPDATE SET
+           render_job_id = excluded.render_job_id,
+           storage_backend = excluded.storage_backend,
+           gcs_uri = excluded.gcs_uri,
+           local_path = excluded.local_path,
+           size_bytes = excluded.size_bytes,
+           duration_sec = excluded.duration_sec,
+           width = excluded.width,
+           height = excluded.height`
+      )
+      .run(
+        id,
+        params.userUid,
+        params.clipId,
+        params.renderJobId ?? null,
+        params.sourceFingerprint,
+        params.renderFingerprint,
+        params.renderProfile,
+        params.storageBackend,
+        params.gcsUri,
+        params.localPath,
+        params.sizeBytes,
+        params.durationSec,
+        params.width,
+        params.height,
+        pipelineVersion,
+        createdAt
+      );
+    return this.findRenderAssetByFingerprint(params.userUid, params.renderFingerprint)!;
+  }
+
+  getCameraTrackingSettings(clipId: string): CameraTrackingSettings | null {
+    const row = this.db
+      .prepare('SELECT * FROM camera_tracking_settings WHERE clip_id = ?')
+      .get(clipId) as
+      | {
+          clip_id: string;
+          auto_mode: number;
+          framing_mode: string;
+          multi_speaker_layout: string;
+          locked_speaker_key: string | null;
+          ignored_speaker_keys_json: string;
+          tracking_sensitivity: number;
+          switching_sensitivity: number;
+          min_shot_duration_sec: number;
+          confidence_threshold: number;
+          cooldown_sec: number;
+          manual_crop_x: number;
+          manual_crop_y: number;
+          manual_zoom: number;
+        }
+      | undefined;
+    if (!row) return null;
+    return {
+      clipId: row.clip_id,
+      autoMode: Boolean(row.auto_mode),
+      framingMode: row.framing_mode as CameraFramingMode,
+      multiSpeakerLayout: row.multi_speaker_layout as MultiSpeakerLayoutMode,
+      lockedSpeakerKey: row.locked_speaker_key ?? null,
+      ignoredSpeakerKeys: safeParseJson<string[]>(row.ignored_speaker_keys_json, []),
+      trackingSensitivity: row.tracking_sensitivity,
+      switchingSensitivity: row.switching_sensitivity,
+      minShotDurationSec: row.min_shot_duration_sec,
+      confidenceThreshold: row.confidence_threshold,
+      cooldownSec: row.cooldown_sec,
+      manualCropX: row.manual_crop_x,
+      manualCropY: row.manual_crop_y,
+      manualZoom: row.manual_zoom,
+    };
+  }
+
+  saveCameraTrackingSettings(userUid: string, settings: CameraTrackingSettings): CameraTrackingSettings {
+    const now = nowIso();
+    this.db
+      .prepare(
+        `INSERT INTO camera_tracking_settings (
+           clip_id, user_uid, auto_mode, framing_mode, multi_speaker_layout,
+           locked_speaker_key, ignored_speaker_keys_json, tracking_sensitivity,
+           switching_sensitivity, min_shot_duration_sec, confidence_threshold,
+           cooldown_sec, manual_crop_x, manual_crop_y, manual_zoom, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (clip_id) DO UPDATE SET
+           auto_mode = excluded.auto_mode,
+           framing_mode = excluded.framing_mode,
+           multi_speaker_layout = excluded.multi_speaker_layout,
+           locked_speaker_key = excluded.locked_speaker_key,
+           ignored_speaker_keys_json = excluded.ignored_speaker_keys_json,
+           tracking_sensitivity = excluded.tracking_sensitivity,
+           switching_sensitivity = excluded.switching_sensitivity,
+           min_shot_duration_sec = excluded.min_shot_duration_sec,
+           confidence_threshold = excluded.confidence_threshold,
+           cooldown_sec = excluded.cooldown_sec,
+           manual_crop_x = excluded.manual_crop_x,
+           manual_crop_y = excluded.manual_crop_y,
+           manual_zoom = excluded.manual_zoom,
+           updated_at = excluded.updated_at`
+      )
+      .run(
+        settings.clipId,
+        userUid,
+        settings.autoMode ? 1 : 0,
+        settings.framingMode,
+        settings.multiSpeakerLayout,
+        settings.lockedSpeakerKey ?? null,
+        JSON.stringify(settings.ignoredSpeakerKeys ?? []),
+        settings.trackingSensitivity,
+        settings.switchingSensitivity,
+        settings.minShotDurationSec,
+        settings.confidenceThreshold,
+        settings.cooldownSec,
+        settings.manualCropX,
+        settings.manualCropY,
+        settings.manualZoom,
+        now
+      );
+    return settings;
+  }
+
+  saveCameraAnalysisData(params: {
+    userUid: string;
+    clipId: string;
+    speakers: SpeakerProfile[];
+    faceTracks: FaceTrackCandidate[];
+    speakerSegments: SpeakerSegment[];
+    cameraSegments: CameraTrackingSegment[];
+  }): void {
+    const now = nowIso();
+    this.transaction(() => {
+      this.db.prepare('DELETE FROM speaker_profiles WHERE clip_id = ?').run(params.clipId);
+      this.db.prepare('DELETE FROM speaker_segments WHERE clip_id = ?').run(params.clipId);
+      this.db.prepare('DELETE FROM face_tracks WHERE clip_id = ?').run(params.clipId);
+      this.db.prepare('DELETE FROM camera_tracking_segments WHERE clip_id = ?').run(params.clipId);
+
+      const insSpeaker = this.db.prepare(
+        `INSERT INTO speaker_profiles (
+           id, clip_id, user_uid, speaker_key, label, color_hex,
+           avg_center_x, avg_center_y, speaking_ratio, avg_confidence,
+           is_locked, is_ignored, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      );
+      for (const spk of params.speakers) {
+        insSpeaker.run(
+          spk.id || `spk_${cryptoRandomId()}`,
+          params.clipId,
+          params.userUid,
+          spk.speakerKey,
+          spk.label,
+          spk.colorHex,
+          spk.avgCenterX,
+          spk.avgCenterY,
+          spk.speakingRatio,
+          spk.avgConfidence,
+          spk.isLocked ? 1 : 0,
+          spk.isIgnored ? 1 : 0,
+          now
+        );
+      }
+
+      const insSpkSeg = this.db.prepare(
+        `INSERT INTO speaker_segments (
+           id, clip_id, speaker_key, start_sec, end_sec,
+           audio_activity_score, lip_sync_score, diarization_score, active_speaker_score, transcript_excerpt
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      );
+      for (const seg of params.speakerSegments) {
+        insSpkSeg.run(
+          seg.id || `spks_${cryptoRandomId()}`,
+          params.clipId,
+          seg.speakerKey,
+          seg.startSec,
+          seg.endSec,
+          seg.audioActivityScore,
+          seg.lipSyncScore,
+          seg.diarizationScore,
+          seg.activeSpeakerScore,
+          seg.transcriptExcerpt || ''
+        );
+      }
+
+      const insFace = this.db.prepare(
+        `INSERT INTO face_tracks (
+           id, clip_id, speaker_key, speaker_label, time_sec,
+           x, y, width, height, mouth_activity, tracking_confidence, diarization_confidence, occluded
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      );
+      for (let i = 0; i < params.faceTracks.length; i++) {
+        const ft = params.faceTracks[i];
+        insFace.run(
+          `ft_${params.clipId}_${i}_${cryptoRandomId().slice(0, 6)}`,
+          params.clipId,
+          ft.speakerKey,
+          ft.speakerLabel || ft.speakerKey,
+          ft.timeSec,
+          ft.x,
+          ft.y,
+          ft.width,
+          ft.height,
+          ft.mouthActivity,
+          ft.trackingConfidence,
+          ft.diarizationConfidence ?? 0.6,
+          ft.occluded ? 1 : 0
+        );
+      }
+
+      const insCam = this.db.prepare(
+        `INSERT INTO camera_tracking_segments (
+           id, clip_id, user_uid, start_sec, end_sec, active_speaker_key,
+           framing_mode, layout_mode, target_x, target_y, zoom, confidence, reason, is_manual_override
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      );
+      for (const cam of params.cameraSegments) {
+        insCam.run(
+          cam.id || `cam_${cryptoRandomId()}`,
+          params.clipId,
+          params.userUid,
+          cam.startSec,
+          cam.endSec,
+          cam.activeSpeakerKey,
+          cam.framingMode,
+          cam.layoutMode,
+          cam.targetX,
+          cam.targetY,
+          cam.zoom,
+          cam.confidence,
+          cam.reason,
+          cam.isManualOverride ? 1 : 0
+        );
+      }
+    });
+  }
+
+  getCameraAnalysisData(clipId: string): {
+    settings: CameraTrackingSettings | null;
+    speakers: SpeakerProfile[];
+    faceTracks: FaceTrackCandidate[];
+    speakerSegments: SpeakerSegment[];
+    cameraSegments: CameraTrackingSegment[];
+  } {
+    const settings = this.getCameraTrackingSettings(clipId);
+    const speakersRows = this.db
+      .prepare('SELECT * FROM speaker_profiles WHERE clip_id = ?')
+      .all(clipId) as Array<{
+      id: string;
+      clip_id: string;
+      speaker_key: string;
+      label: string;
+      color_hex: string;
+      avg_center_x: number;
+      avg_center_y: number;
+      speaking_ratio: number;
+      avg_confidence: number;
+      is_locked: number;
+      is_ignored: number;
+    }>;
+    const faceRows = this.db
+      .prepare('SELECT * FROM face_tracks WHERE clip_id = ? ORDER BY time_sec ASC')
+      .all(clipId) as Array<{
+      speaker_key: string;
+      speaker_label: string;
+      time_sec: number;
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      mouth_activity: number;
+      tracking_confidence: number;
+      diarization_confidence: number;
+      occluded: number;
+    }>;
+    const spkSegRows = this.db
+      .prepare('SELECT * FROM speaker_segments WHERE clip_id = ? ORDER BY start_sec ASC')
+      .all(clipId) as Array<{
+      id: string;
+      clip_id: string;
+      speaker_key: string;
+      start_sec: number;
+      end_sec: number;
+      audio_activity_score: number;
+      lip_sync_score: number;
+      diarization_score: number;
+      active_speaker_score: number;
+      transcript_excerpt: string;
+    }>;
+    const camRows = this.db
+      .prepare('SELECT * FROM camera_tracking_segments WHERE clip_id = ? ORDER BY start_sec ASC')
+      .all(clipId) as Array<{
+      id: string;
+      clip_id: string;
+      start_sec: number;
+      end_sec: number;
+      active_speaker_key: string;
+      framing_mode: string;
+      layout_mode: string;
+      target_x: number;
+      target_y: number;
+      zoom: number;
+      confidence: number;
+      reason: string;
+      is_manual_override: number;
+    }>;
+
+    return {
+      settings,
+      speakers: speakersRows.map((r) => ({
+        id: r.id,
+        clipId: r.clip_id,
+        speakerKey: r.speaker_key,
+        label: r.label,
+        colorHex: r.color_hex,
+        avgCenterX: r.avg_center_x,
+        avgCenterY: r.avg_center_y,
+        speakingRatio: r.speaking_ratio,
+        avgConfidence: r.avg_confidence,
+        isLocked: Boolean(r.is_locked),
+        isIgnored: Boolean(r.is_ignored),
+      })),
+      faceTracks: faceRows.map((r) => ({
+        speakerKey: r.speaker_key,
+        speakerLabel: r.speaker_label,
+        timeSec: r.time_sec,
+        x: r.x,
+        y: r.y,
+        width: r.width,
+        height: r.height,
+        mouthActivity: r.mouth_activity,
+        trackingConfidence: r.tracking_confidence,
+        diarizationConfidence: r.diarization_confidence,
+        occluded: Boolean(r.occluded),
+      })),
+      speakerSegments: spkSegRows.map((r) => ({
+        id: r.id,
+        clipId: r.clip_id,
+        speakerKey: r.speaker_key,
+        startSec: r.start_sec,
+        endSec: r.end_sec,
+        audioActivityScore: r.audio_activity_score,
+        lipSyncScore: r.lip_sync_score,
+        diarizationScore: r.diarization_score,
+        activeSpeakerScore: r.active_speaker_score,
+        transcriptExcerpt: r.transcript_excerpt,
+      })),
+      cameraSegments: camRows.map((r) => ({
+        id: r.id,
+        clipId: r.clip_id,
+        startSec: r.start_sec,
+        endSec: r.end_sec,
+        activeSpeakerKey: r.active_speaker_key,
+        framingMode: r.framing_mode as CameraFramingMode,
+        layoutMode: r.layout_mode as MultiSpeakerLayoutMode,
+        targetX: r.target_x,
+        targetY: r.target_y,
+        zoom: r.zoom,
+        confidence: r.confidence,
+        reason: r.reason,
+        isManualOverride: Boolean(r.is_manual_override),
+      })),
+    };
+  }
+
+  listUserIntroTemplates(userUid: string): UserIntroTemplateRecord[] {
+    const rows = this.db
+      .prepare('SELECT * FROM user_intro_templates WHERE user_uid = ? ORDER BY updated_at DESC')
+      .all(userUid) as Array<{
+      id: string;
+      user_uid: string;
+      base_template_id: string | null;
+      name: string;
+      category: string;
+      description: string;
+      duration_sec: number;
+      current_version: number;
+      config_json: string;
+      created_at: string;
+      updated_at: string;
+    }>;
+    return rows.map((r) => ({
+      id: r.id,
+      userUid: r.user_uid,
+      baseTemplateId: r.base_template_id,
+      name: r.name,
+      category: r.category as IntroTemplateCategory,
+      description: r.description,
+      durationSec: r.duration_sec,
+      currentVersion: r.current_version,
+      config: safeParseJson<IntroTemplateDefinition>(r.config_json, {} as IntroTemplateDefinition),
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+    }));
+  }
+
+  getUserIntroTemplate(userUid: string, id: string): UserIntroTemplateRecord | null {
+    const r = this.db
+      .prepare('SELECT * FROM user_intro_templates WHERE id = ? AND user_uid = ?')
+      .get(id, userUid) as
+      | {
+          id: string;
+          user_uid: string;
+          base_template_id: string | null;
+          name: string;
+          category: string;
+          description: string;
+          duration_sec: number;
+          current_version: number;
+          config_json: string;
+          created_at: string;
+          updated_at: string;
+        }
+      | undefined;
+    if (!r) return null;
+    return {
+      id: r.id,
+      userUid: r.user_uid,
+      baseTemplateId: r.base_template_id,
+      name: r.name,
+      category: r.category as IntroTemplateCategory,
+      description: r.description,
+      durationSec: r.duration_sec,
+      currentVersion: r.current_version,
+      config: safeParseJson<IntroTemplateDefinition>(r.config_json, {} as IntroTemplateDefinition),
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+    };
+  }
+
+  saveUserIntroTemplate(params: {
+    id?: string;
+    userUid: string;
+    baseTemplateId?: string | null;
+    name: string;
+    category: IntroTemplateCategory;
+    description: string;
+    durationSec: number;
+    config: IntroTemplateDefinition;
+    changeNote?: string;
+  }): UserIntroTemplateRecord {
+    const now = nowIso();
+    return this.transaction(() => {
+      const existing = params.id ? this.getUserIntroTemplate(params.userUid, params.id) : null;
+      if (existing) {
+        const nextVersion = existing.currentVersion + 1;
+        const nextConfig = {
+          ...params.config,
+          id: existing.id,
+          name: params.name,
+          category: params.category,
+          description: params.description,
+          durationSec: params.durationSec,
+          isGlobal: false,
+          currentVersion: nextVersion,
+          updatedAt: now,
+        };
+        this.db
+          .prepare(
+            `UPDATE user_intro_templates
+             SET name = ?, category = ?, description = ?, duration_sec = ?,
+                 current_version = ?, config_json = ?, updated_at = ?
+             WHERE id = ? AND user_uid = ?`
+          )
+          .run(
+            params.name,
+            params.category,
+            params.description,
+            params.durationSec,
+            nextVersion,
+            JSON.stringify(nextConfig),
+            now,
+            existing.id,
+            params.userUid
+          );
+        this.db
+          .prepare(
+            `INSERT INTO intro_template_versions (id, template_id, user_uid, version_number, change_note, config_json, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`
+          )
+          .run(
+            `itv_${cryptoRandomId()}`,
+            existing.id,
+            params.userUid,
+            nextVersion,
+            params.changeNote || 'Pembaruan template intro',
+            JSON.stringify(nextConfig),
+            now
+          );
+        return this.getUserIntroTemplate(params.userUid, existing.id)!;
+      }
+
+      const id = params.id || `uit_${cryptoRandomId()}`;
+      const config = {
+        ...params.config,
+        id,
+        name: params.name,
+        category: params.category,
+        description: params.description,
+        durationSec: params.durationSec,
+        isGlobal: false,
+        currentVersion: 1,
+        updatedAt: now,
+      };
+      this.db
+        .prepare(
+          `INSERT INTO user_intro_templates (
+             id, user_uid, base_template_id, name, category, description,
+             duration_sec, current_version, config_json, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`
+        )
+        .run(
+          id,
+          params.userUid,
+          params.baseTemplateId ?? null,
+          params.name,
+          params.category,
+          params.description,
+          params.durationSec,
+          JSON.stringify(config),
+          now,
+          now
+        );
+      this.db
+        .prepare(
+          `INSERT INTO intro_template_versions (id, template_id, user_uid, version_number, change_note, config_json, created_at)
+           VALUES (?, ?, ?, 1, ?, ?, ?)`
+        )
+        .run(
+          `itv_${cryptoRandomId()}`,
+          id,
+          params.userUid,
+          params.changeNote || 'Versi awal template intro',
+          JSON.stringify(config),
+          now
+        );
+      return this.getUserIntroTemplate(params.userUid, id)!;
+    });
+  }
+
+  deleteUserIntroTemplate(userUid: string, id: string): boolean {
+    const res = this.db
+      .prepare('DELETE FROM user_intro_templates WHERE id = ? AND user_uid = ?')
+      .run(id, userUid);
+    return Number(res.changes ?? 0) > 0;
+  }
+
+  listIntroTemplateVersions(userUid: string, templateId: string): IntroTemplateVersionRecord[] {
+    const rows = this.db
+      .prepare(
+        'SELECT * FROM intro_template_versions WHERE template_id = ? AND user_uid = ? ORDER BY version_number DESC'
+      )
+      .all(templateId, userUid) as Array<{
+      id: string;
+      template_id: string;
+      user_uid: string;
+      version_number: number;
+      change_note: string;
+      config_json: string;
+      created_at: string;
+    }>;
+    return rows.map((r) => ({
+      id: r.id,
+      templateId: r.template_id,
+      userUid: r.user_uid,
+      versionNumber: r.version_number,
+      changeNote: r.change_note,
+      config: safeParseJson<IntroTemplateDefinition>(r.config_json, {} as IntroTemplateDefinition),
+      createdAt: r.created_at,
+    }));
+  }
+
+  getSystemPlanOverrides(): Partial<Record<PlanTier, Partial<PlanQuotaDefaults>>> | null {
+    const row = this.db
+      .prepare('SELECT value_json FROM system_settings WHERE key = ?')
+      .get('platform_config') as { value_json: string } | undefined;
+    if (!row?.value_json) return null;
+    const parsed = safeParseJson<{ plans?: Partial<Record<PlanTier, Partial<PlanQuotaDefaults>>> }>(
+      row.value_json,
+      {}
+    );
+    return parsed.plans ?? null;
   }
 
   checkHealth(): boolean {

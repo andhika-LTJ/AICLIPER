@@ -350,11 +350,16 @@ export function corsAllowlistMiddleware(
   try {
     const parsedOrigin = new URL(origin);
     const originHost = parsedOrigin.host.toLowerCase();
-    if (host && originHost === host) {
+    const originHostname = parsedOrigin.hostname.toLowerCase();
+    const hostHostname = host.split(':')[0] || '';
+    if ((host && originHost === host) || (hostHostname && originHostname === hostHostname)) {
       isAllowed = true;
     } else if (
-      originHost.endsWith('.run.app') ||
-      originHost.endsWith('.aistudio.google.com') ||
+      originHostname.endsWith('.run.app') ||
+      originHostname.endsWith('.aistudio.google.com') ||
+      originHostname.endsWith('.usercontent.goog') ||
+      originHostname.endsWith('.web.app') ||
+      originHostname.endsWith('.firebaseapp.com') ||
       originHost === 'localhost:3000' ||
       originHost === '127.0.0.1:3000'
     ) {
@@ -377,7 +382,14 @@ export function corsAllowlistMiddleware(
   }
 
   if (req.method === 'OPTIONS') {
-    res.status(isAllowed ? 204 : 403).end();
+    if (isAllowed) {
+      res.status(204).end();
+    } else {
+      res.status(403).json({
+        code: 'CORS_ORIGIN_FORBIDDEN',
+        error: 'Origin permintaan tidak diizinkan oleh kebijakan keamanan CORS.',
+      });
+    }
     return;
   }
 

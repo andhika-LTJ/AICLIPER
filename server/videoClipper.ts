@@ -4,9 +4,13 @@ import os from 'os';
 import path from 'path';
 import { promisify } from 'util';
 import type {
+  BalancedRenderProfile,
+  CameraTrackingSettings,
   ClipOverlayStyle,
   ClipRenderLayout,
   ClipRenderQuality,
+  IntroTemplateDefinition,
+  MultiSpeakerLayoutMode,
   PodcastClip,
   PodcastEpisode,
 } from '../src/types/clipper.ts';
@@ -19,6 +23,16 @@ import {
   analyzeTrimmedClipIntelligence,
   type ClipIntelligenceResult,
 } from './clipIntelligence.ts';
+import {
+  compileIntroTemplateForFfmpeg,
+  normalizeIntroTemplateDefinition,
+  type CompiledIntroRenderPlan,
+} from './services/introRenderCompiler.ts';
+import {
+  computeSourceFingerprint,
+  resolveBalancedRenderProfile,
+  type BalancedRenderProfileSpec,
+} from './services/renderFingerprint.ts';
 import { buildEmotionAudioFilterGraph } from './emotionEffects.ts';
 import {
   buildSmoothCropAxisExpression,
@@ -27,6 +41,7 @@ import {
   getTargetCanvasDimensions,
   normalizeRenderLayout,
   normalizeRenderQuality,
+  resolveNonUpscaledTargetDimensions,
   type CanonicalRenderQuality,
   type CanonicalStudioLayout,
 } from './speakerFocusMath.ts';
@@ -98,6 +113,25 @@ export function getUploadedVideoPath(episodeId: string): string | null {
     resolveConfinedPath(UPLOADS_DIR, `${safeId}${ext}`)
   );
   return candidates.find((p) => fs.existsSync(p)) ?? null;
+}
+
+export function getEpisodeSourceFingerprintTag(
+  episode: Pick<PodcastEpisode, 'id' | 'directVideoUrl'>
+): string {
+  const uploaded = getUploadedVideoPath(episode.id);
+  if (uploaded) {
+    try {
+      const st = fs.statSync(uploaded);
+      return `uploaded:${episode.id}:${st.size}:${Math.floor(st.mtimeMs)}`;
+    } catch {
+      return `uploaded:${episode.id}`;
+    }
+  }
+  const direct = episode.directVideoUrl?.trim();
+  if (direct) {
+    return `direct:${direct}`;
+  }
+  return '';
 }
 
 export function getUploadTargetPath(episodeId: string): string {
@@ -264,6 +298,14 @@ export class RenderCancelledError extends Error {
   }
 }
 
+export class RenderTimeoutError extends Error {
+  code = 'WORKER_TIMEOUT' as const;
+  constructor(message = 'Worker render melewati batas waktu proses FFmpeg.') {
+    super(message);
+    this.name = 'RenderTimeoutError';
+  }
+}
+
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {
     throw new RenderCancelledError();
@@ -384,9 +426,16 @@ async function runFfmpegWithProgress(params: {
   durationSec: number;
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
+  timeoutMs?: number;
   onPercent?: (ratio01: number) => void;
 }): Promise<void> {
   const { args, durationSec, env, signal, onPercent } = params;
+  const configuredTimeoutMs =
+    typeof params.timeoutMs === 'number' && params.timeoutMs > 0
+      ? params.timeoutMs
+      : Number(process.env.RENDER_JOB_TIMEOUT_MS) > 0
+        ? Number(process.env.RENDER_JOB_TIMEOUT_MS)
+        : 0;
   throwIfAborted(signal);
   const ffmpegBin = await ensureFfmpegPath();
 
@@ -405,7 +454,9 @@ async function runFfmpegWithProgress(params: {
     let stdoutBuf = '';
     let lastReportedPct = -1;
     let settled = false;
+    let timedOut = false;
     let forceKillTimer: ReturnType<typeof setTimeout> | null = null;
+    let executionTimer: ReturnType<typeof setTimeout> | null = null;
 
     const cleanup = () => {
       signal?.removeEventListener('abort', onAbort);
@@ -413,9 +464,13 @@ async function runFfmpegWithProgress(params: {
         clearTimeout(forceKillTimer);
         forceKillTimer = null;
       }
+      if (executionTimer) {
+        clearTimeout(executionTimer);
+        executionTimer = null;
+      }
     };
 
-    const onAbort = () => {
+    const killChildSafely = () => {
       try {
         child.kill('SIGTERM');
       } catch {
@@ -428,6 +483,10 @@ async function runFfmpegWithProgress(params: {
           // Ignore
         }
       }, 400);
+    };
+
+    const onAbort = () => {
+      killChildSafely();
       if (!settled) {
         settled = true;
         cleanup();
@@ -436,6 +495,22 @@ async function runFfmpegWithProgress(params: {
     };
 
     signal?.addEventListener('abort', onAbort, { once: true });
+
+    if (configuredTimeoutMs > 0) {
+      executionTimer = setTimeout(() => {
+        timedOut = true;
+        killChildSafely();
+        if (!settled) {
+          settled = true;
+          cleanup();
+          reject(
+            new RenderTimeoutError(
+              `Worker render FFmpeg melebihi batas waktu (${Math.ceil(configuredTimeoutMs / 1000)} detik).`
+            )
+          );
+        }
+      }, configuredTimeoutMs);
+    }
 
     child.stdout.on('data', (chunk: Buffer) => {
       stdoutBuf += chunk.toString('utf8');
@@ -472,7 +547,9 @@ async function runFfmpegWithProgress(params: {
       if (settled) return;
       settled = true;
       cleanup();
-      if (signal?.aborted) {
+      if (timedOut) {
+        reject(new RenderTimeoutError());
+      } else if (signal?.aborted) {
         reject(new RenderCancelledError());
       } else if (code === 0) {
         resolve();
@@ -884,15 +961,65 @@ async function tryYtDlpDownloadSection(params: {
 
 /**
  * Downloads a live chunked HTTP MP4 stream (such as SaveNow v2 pre-trimmed 1080p/4K)
- * directly to a local temp file with instant abort support and no Range probe.
+ * directly to a local temp file with connect/header timeout, chunk inactivity watchdog,
+ * total download ceiling, and instant abort support so stalled providers fail fast cleanly.
  */
-async function downloadChunkedStreamToFile(params: {
+export async function downloadChunkedStreamToFile(params: {
   streamUrl: string;
   destPath: string;
   headers?: Record<string, string>;
   signal?: AbortSignal;
-}): Promise<void> {
+  headerTimeoutMs?: number;
+  inactivityTimeoutMs?: number;
+  totalTimeoutMs?: number;
+  onBytesProgress?: (downloadedBytes: number, totalBytes: number | null) => void;
+}): Promise<{ bytesWritten: number }> {
   throwIfAborted(params.signal);
+
+  const headerTimeoutMs = Math.max(150, params.headerTimeoutMs ?? 20_000);
+  const inactivityTimeoutMs = Math.max(150, params.inactivityTimeoutMs ?? 18_000);
+  const totalTimeoutMs = Math.max(headerTimeoutMs, params.totalTimeoutMs ?? 120_000);
+
+  const requestController = new AbortController();
+  let failureReason: Error | null = null;
+  const getFailureReason = (): Error | null => failureReason;
+
+  const onParentAbort = () => {
+    failureReason = new RenderCancelledError();
+    requestController.abort(failureReason);
+  };
+  params.signal?.addEventListener('abort', onParentAbort, { once: true });
+
+  const headerTimer = setTimeout(() => {
+    failureReason = new Error('Timeout menunggu respon awal stream video HD dari provider.');
+    requestController.abort(failureReason);
+  }, headerTimeoutMs);
+
+  const totalTimer = setTimeout(() => {
+    failureReason = new Error('Unduhan stream video HD melebihi batas waktu total.');
+    requestController.abort(failureReason);
+  }, totalTimeoutMs);
+
+  let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
+  const resetInactivityTimer = (reader?: ReadableStreamDefaultReader<Uint8Array>) => {
+    if (inactivityTimer) clearTimeout(inactivityTimer);
+    inactivityTimer = setTimeout(() => {
+      failureReason = new Error('Koneksi unduhan stream video HD terhenti (inactivity stall).');
+      requestController.abort(failureReason);
+      void reader?.cancel(failureReason).catch(() => {});
+    }, inactivityTimeoutMs);
+  };
+
+  const cleanupTimers = () => {
+    clearTimeout(headerTimer);
+    clearTimeout(totalTimer);
+    if (inactivityTimer) {
+      clearTimeout(inactivityTimer);
+      inactivityTimer = null;
+    }
+    params.signal?.removeEventListener('abort', onParentAbort);
+  };
+
   let res: Response;
   try {
     res = await fetch(params.streamUrl, {
@@ -901,46 +1028,98 @@ async function downloadChunkedStreamToFile(params: {
         'User-Agent': BROWSER_UA,
         ...(params.headers ?? {}),
       },
-      signal: params.signal,
+      signal: requestController.signal,
     });
+    clearTimeout(headerTimer);
   } catch (err) {
-    if (isAbortLikeError(err, params.signal)) {
+    cleanupTimers();
+    const recordedFailure = getFailureReason();
+    if (isAbortLikeError(err, params.signal) || recordedFailure instanceof RenderCancelledError) {
       throw new RenderCancelledError();
+    }
+    if (recordedFailure) {
+      throw recordedFailure;
     }
     throw err;
   }
+
   if (!res.ok || !res.body) {
+    cleanupTimers();
     throw new Error(`Unduhan stream HD gagal (HTTP ${res.status}).`);
   }
 
+  const contentLengthHeader = Number(res.headers.get('content-length') ?? 0);
+  const totalBytes = Number.isFinite(contentLengthHeader) && contentLengthHeader > 0
+    ? contentLengthHeader
+    : null;
+
   const out = fs.createWriteStream(params.destPath);
   const reader = res.body.getReader();
+  let bytesWritten = 0;
+
   try {
+    resetInactivityTimer(reader);
     while (true) {
       if (params.signal?.aborted) {
         await reader.cancel().catch(() => {});
         throw new RenderCancelledError();
       }
+      if (failureReason) {
+        await reader.cancel().catch(() => {});
+        throw failureReason;
+      }
+
       const { done, value } = await reader.read();
       if (done) break;
+
+      resetInactivityTimer(reader);
       if (value && value.byteLength > 0) {
-        const canContinue = out.write(Buffer.from(value.buffer, value.byteOffset, value.byteLength));
+        bytesWritten += value.byteLength;
+        params.onBytesProgress?.(bytesWritten, totalBytes);
+        const canContinue = out.write(
+          Buffer.from(value.buffer, value.byteOffset, value.byteLength)
+        );
         if (!canContinue) {
-          await new Promise<void>((resolve) => out.once('drain', resolve));
+          await new Promise<void>((resolve, reject) => {
+            const onDrain = () => {
+              out.off('error', onErr);
+              resolve();
+            };
+            const onErr = (e: Error) => {
+              out.off('drain', onDrain);
+              reject(e);
+            };
+            out.once('drain', onDrain);
+            out.once('error', onErr);
+          });
         }
       }
     }
+
     await new Promise<void>((resolve, reject) => {
       out.once('error', reject);
       out.end(() => resolve());
     });
+    return { bytesWritten };
   } catch (err) {
     out.destroy();
-    if (fs.existsSync(params.destPath)) fs.unlinkSync(params.destPath);
-    if (isAbortLikeError(err, params.signal)) {
+    if (fs.existsSync(params.destPath)) {
+      try {
+        fs.unlinkSync(params.destPath);
+      } catch {
+        // Ignore cleanup failure
+      }
+    }
+    const recordedFailure = getFailureReason();
+    if (isAbortLikeError(err, params.signal) || recordedFailure instanceof RenderCancelledError) {
       throw new RenderCancelledError();
     }
+    if (recordedFailure) {
+      throw recordedFailure;
+    }
     throw err;
+  } finally {
+    cleanupTimers();
   }
 }
 
@@ -1048,11 +1227,30 @@ async function acquireRawClipSegment(params: {
 
         onProgress?.(`Menyiapkan stream ${stream.qualityTier ?? 'HD'} (${stream.provider})...`, 24);
         if (stream.isDirectChunkedDownload || stream.isPreTrimmed) {
+          let lastPctEmit = 0;
           await downloadChunkedStreamToFile({
             streamUrl: stream.streamUrl,
             destPath: chunkedTempPath,
             headers: stream.headers,
             signal,
+            onBytesProgress: (downloadedBytes, totalBytes) => {
+              const now = Date.now();
+              if (now - lastPctEmit < 900) return;
+              lastPctEmit = now;
+              const mb = (downloadedBytes / (1024 * 1024)).toFixed(1);
+              if (totalBytes && totalBytes > 0) {
+                const ratio = Math.min(0.99, downloadedBytes / totalBytes);
+                onProgress?.(
+                  `Mengunduh stream ${stream.qualityTier ?? 'HD'} (${mb} MB / ${(totalBytes / (1024 * 1024)).toFixed(1)} MB)...`,
+                  24 + Math.round(ratio * 4)
+                );
+              } else {
+                onProgress?.(
+                  `Mengunduh stream ${stream.qualityTier ?? 'HD'} (${mb} MB)...`,
+                  25
+                );
+              }
+            },
           });
           await extractRawTrimmedSegment({
             inputSource: chunkedTempPath,
@@ -1213,6 +1411,41 @@ function buildFastClarityChain(
   ].join(',');
 }
 
+function computeEvenDim(val: number): number {
+  const n = Math.max(16, Math.round(val));
+  return n % 2 === 0 ? n : n - 1;
+}
+
+function resolveProfileCanvasDimensions(
+  layout: CanonicalStudioLayout,
+  quality: CanonicalRenderQuality,
+  profileSpec?: BalancedRenderProfileSpec,
+  sourceWidth?: number,
+  sourceHeight?: number
+) {
+  return resolveNonUpscaledTargetDimensions({
+    layout,
+    quality,
+    profileId: profileSpec?.id,
+    sourceWidth,
+    sourceHeight,
+  });
+}
+
+function buildMultiSpeakerCropExprForCenter(params: {
+  centerX: number;
+  centerY: number;
+  sourceSize: number;
+  cropSize: number;
+  axis: 'x' | 'y';
+}): string {
+  const maxOffset = Math.max(0, Math.floor(params.sourceSize - params.cropSize));
+  if (maxOffset <= 0) return '0';
+  const norm = params.axis === 'x' ? params.centerX : params.centerY;
+  const offset = Math.round(Math.max(0, Math.min(maxOffset, norm * params.sourceSize - params.cropSize / 2)));
+  return String(offset);
+}
+
 export function buildStudioFilterComplex(params: {
   layout: CanonicalStudioLayout;
   quality: CanonicalRenderQuality;
@@ -1227,6 +1460,10 @@ export function buildStudioFilterComplex(params: {
     loopExtraFrames: number;
     exactDurationSec: number;
   } | null;
+  profileSpec?: BalancedRenderProfileSpec;
+  compiledIntroPlan?: CompiledIntroRenderPlan | null;
+  introAssPath?: string | null;
+  introBackgroundMode?: IntroTemplateDefinition['background']['mode'] | null;
 }): string {
   const {
     layout,
@@ -1238,20 +1475,59 @@ export function buildStudioFilterComplex(params: {
     intelligence,
     overlayStyle,
     introTiming,
+    profileSpec,
+    compiledIntroPlan,
+    introAssPath,
+    introBackgroundMode,
   } = params;
+  const targetFps = profileSpec?.fps ?? INTRO_FPS;
   const assEscaped = escapeFfmpegFilterPath(assPath);
   const fontsDirEscaped = escapeFfmpegFilterPath(fontsDir);
   const assFilter = `ass='${assEscaped}':fontsdir='${fontsDirEscaped}'`;
-  const { outW, outH } = getTargetCanvasDimensions(layout, quality);
+  const { outW, outH, effectiveQuality } = resolveProfileCanvasDimensions(
+    layout,
+    quality,
+    profileSpec,
+    sourceW,
+    sourceH
+  );
   const isLandscape = layout === 'full_16_9_focus';
   const normStyle = normalizeClipOverlayStyle(overlayStyle);
   const avgZoom =
     intelligence.keyframes.reduce((acc, k) => acc + k.zoomScale, 0) /
     Math.max(1, intelligence.keyframes.length);
 
-  // Build crisp 1-frame-blurred cinematic AI intro clip looped to exact 30fps frame count
+  const customIntroNeedsSourceVideo = Boolean(
+    introTiming &&
+      compiledIntroPlan &&
+      introBackgroundMode &&
+      introBackgroundMode !== 'solid' &&
+      introBackgroundMode !== 'gradient'
+  );
+  const usesLegacyIntroFromSource = Boolean(introTiming && !compiledIntroPlan);
+  const introConsumesSourceVideo = usesLegacyIntroFromSource || customIntroNeedsSourceVideo;
+
   const buildIntroChain = (inputLabel: string): string => {
     if (!introTiming) return '';
+    const fadeOutStart = Math.max(0.2, introTiming.exactDurationSec - 0.24).toFixed(4);
+
+    if (compiledIntroPlan) {
+      const hasIntroAss = Boolean(
+        introAssPath &&
+          compiledIntroPlan.hasTextBoxLayers + compiledIntroPlan.hasTextOnlyLayers > 0 &&
+          compiledIntroPlan.assScript.includes('Dialogue:')
+      );
+      const introAssSuffix = hasIntroAss
+        ? `,ass='${escapeFfmpegFilterPath(introAssPath!)}':fontsdir='${fontsDirEscaped}'`
+        : '';
+
+      if (introBackgroundMode === 'solid' || introBackgroundMode === 'gradient') {
+        return `${compiledIntroPlan.backgroundFilter},trim=duration=${introTiming.exactDurationSec.toFixed(4)},setpts=PTS-STARTPTS,fps=${targetFps},setsar=1${introAssSuffix},format=yuv420p,fade=t=out:st=${fadeOutStart}:d=0.24[intro_v]`;
+      }
+
+      return `${inputLabel}trim=end_frame=1,setpts=PTS-STARTPTS,${compiledIntroPlan.backgroundFilter},loop=loop=${introTiming.loopExtraFrames}:size=1:start=0,setpts=N/${targetFps}/TB,fps=${targetFps},setsar=1${introAssSuffix},format=yuv420p,fade=t=out:st=${fadeOutStart}:d=0.24[intro_v]`;
+    }
+
     const blurW = isLandscape ? 320 : 180;
     const blurH = isLandscape ? 180 : 320;
     const anchor = computeIntroAnchorLayout({ isLandscape, style: normStyle });
@@ -1260,8 +1536,42 @@ export function buildStudioFilterComplex(params: {
     const barX = Math.max(0, Math.min(outW - barW, Math.round(outW * anchor.barXRatio)));
     const barY = Math.max(0, Math.min(outH - barH, Math.round(outH * anchor.barYRatio)));
     const barColor = hexToFfmpegColor(normStyle.introAccentColor);
-    const fadeOutStart = Math.max(0.2, introTiming.exactDurationSec - 0.24).toFixed(4);
-    return `${inputLabel}trim=end_frame=1,setpts=PTS-STARTPTS,scale=${blurW}:${blurH}:force_original_aspect_ratio=increase:flags=fast_bilinear,crop=${blurW}:${blurH},boxblur=8:2,eq=brightness=-0.30:contrast=1.14:saturation=1.18,scale=${outW}:${outH}:flags=fast_bilinear,setsar=1,format=yuv420p,drawbox=x=0:y=0:w=${outW}:h=${outH}:color=0x090D16@0.44:t=fill,drawbox=x=${barX}:y=${barY}:w=${barW}:h=${barH}:color=${barColor}@0.94:t=fill,loop=loop=${introTiming.loopExtraFrames}:size=1:start=0,setpts=N/${INTRO_FPS}/TB,fps=${INTRO_FPS},fade=t=out:st=${fadeOutStart}:d=0.24[intro_v]`;
+    return `${inputLabel}trim=end_frame=1,setpts=PTS-STARTPTS,scale=${blurW}:${blurH}:force_original_aspect_ratio=increase:flags=fast_bilinear,crop=${blurW}:${blurH},boxblur=8:2,eq=brightness=-0.30:contrast=1.14:saturation=1.18,scale=${outW}:${outH}:flags=fast_bilinear,setsar=1,format=yuv420p,drawbox=x=0:y=0:w=${outW}:h=${outH}:color=0x090D16@0.44:t=fill,drawbox=x=${barX}:y=${barY}:w=${barW}:h=${barH}:color=${barColor}@0.94:t=fill,loop=loop=${introTiming.loopExtraFrames}:size=1:start=0,setpts=N/${targetFps}/TB,fps=${targetFps},fade=t=out:st=${fadeOutStart}:d=0.24[intro_v]`;
+  };
+
+  const finalizeMainAndConcat = (
+    mainBodyChain: string,
+    extraSetupChains: string[] = []
+  ): string => {
+    const applyMainAssOnMain = Boolean(compiledIntroPlan);
+    if (introTiming) {
+      const chains: string[] = [...extraSetupChains];
+      if (introConsumesSourceVideo) {
+        chains.push(buildIntroChain('[introsrc]'));
+      } else {
+        chains.push(buildIntroChain(''));
+      }
+
+      if (applyMainAssOnMain) {
+        chains.push(
+          `${mainBodyChain},fps=${targetFps},setpts=PTS-STARTPTS,fade=t=in:st=0:d=0.20,${assFilter},format=yuv420p[main_v]`,
+          '[intro_v][main_v]concat=n=2:v=1:a=0[out]'
+        );
+      } else {
+        chains.push(
+          `${mainBodyChain},fps=${targetFps},setpts=PTS-STARTPTS,fade=t=in:st=0:d=0.20[main_v]`,
+          '[intro_v][main_v]concat=n=2:v=1:a=0[comp]',
+          `[comp]${assFilter}[out]`
+        );
+      }
+      return chains.join(';');
+    }
+
+    return [
+      ...extraSetupChains,
+      `${mainBodyChain},fps=${targetFps},setpts=PTS-STARTPTS[comp]`,
+      `[comp]${assFilter}[out]`,
+    ].join(';');
   };
 
   if (layout === 'full_16_9_focus') {
@@ -1285,63 +1595,286 @@ export function buildStudioFilterComplex(params: {
     const clarity = buildFastClarityChain(sourceH, outW, outH, quality);
     const mainBody = `crop=w=${cropW}:h=${cropH}:x='${xExpr}':y='${yExpr}',${clarity},setsar=1,format=yuv420p,drawbox=x=0:y=0:w=${outW}:h=${topScrimH}:color=0x000000@0.26:t=fill,drawbox=x=0:y=${outH - botScrimH}:w=${outW}:h=${botScrimH}:color=0x000000@0.30:t=fill`;
 
-    if (introTiming) {
-      return [
+    if (introConsumesSourceVideo) {
+      return finalizeMainAndConcat(`[mainsrc]${mainBody}`, [
         '[0:v]setpts=PTS-STARTPTS,split=2[introsrc][mainsrc]',
-        buildIntroChain('[introsrc]'),
-        `[mainsrc]${mainBody},fps=${INTRO_FPS},setpts=PTS-STARTPTS,fade=t=in:st=0:d=0.20[main_v]`,
-        '[intro_v][main_v]concat=n=2:v=1:a=0[comp]',
-        `[comp]${assFilter}[out]`,
-      ].join(';');
+      ]);
     }
-
-    return [
-      `[0:v]setpts=PTS-STARTPTS,${mainBody}[comp]`,
-      `[comp]${assFilter}[out]`,
-    ].join(';');
+    return finalizeMainAndConcat(`[0:v]setpts=PTS-STARTPTS,${mainBody}`);
   }
 
-  if (layout === 'shorts_studio_focus') {
-    const safeZoom = sourceH >= 720 ? Math.max(1.06, Math.min(1.26, avgZoom * 0.85)) : 1.02;
-    const { cropW, cropH } = computeCropWindow(sourceW, sourceH, 8, 7, safeZoom);
-    const xExpr = buildSmoothCropAxisExpression({
+  // Multi-speaker vertical layouts (split_screen, side_by_side, picture_in_picture, speaker_plus_context)
+  const requestedMultiLayout: MultiSpeakerLayoutMode =
+    intelligence.cameraAnalysis?.settings.multiSpeakerLayout ?? 'active_speaker_full';
+  const isVerticalCanvas = layout === 'shorts_full_bleed' || layout === 'shorts_studio_focus';
+
+  if (
+    isVerticalCanvas &&
+    (requestedMultiLayout === 'split_screen' ||
+      requestedMultiLayout === 'side_by_side' ||
+      requestedMultiLayout === 'picture_in_picture' ||
+      requestedMultiLayout === 'speaker_plus_context')
+  ) {
+    const speakers = intelligence.cameraAnalysis?.speakers ?? [];
+    const primarySpk = speakers[0] ?? { avgCenterX: 0.28, avgCenterY: 0.42 };
+    const secondarySpk = speakers[1] ?? {
+      avgCenterX: primarySpk.avgCenterX < 0.5 ? 0.72 : 0.28,
+      avgCenterY: 0.42,
+    };
+
+    if (requestedMultiLayout === 'split_screen') {
+      const halfH = computeEvenDim(outH / 2);
+      const { cropW, cropH } = computeCropWindow(sourceW, sourceH, outW, halfH, 1.06);
+      const topX = buildMultiSpeakerCropExprForCenter({
+        centerX: primarySpk.avgCenterX,
+        centerY: primarySpk.avgCenterY,
+        sourceSize: sourceW,
+        cropSize: cropW,
+        axis: 'x',
+      });
+      const topY = buildMultiSpeakerCropExprForCenter({
+        centerX: primarySpk.avgCenterX,
+        centerY: primarySpk.avgCenterY,
+        sourceSize: sourceH,
+        cropSize: cropH,
+        axis: 'y',
+      });
+      const botX = buildMultiSpeakerCropExprForCenter({
+        centerX: secondarySpk.avgCenterX,
+        centerY: secondarySpk.avgCenterY,
+        sourceSize: sourceW,
+        cropSize: cropW,
+        axis: 'x',
+      });
+      const botY = buildMultiSpeakerCropExprForCenter({
+        centerX: secondarySpk.avgCenterX,
+        centerY: secondarySpk.avgCenterY,
+        sourceSize: sourceH,
+        cropSize: cropH,
+        axis: 'y',
+      });
+      const clarityTop = buildFastClarityChain(sourceH, outW, halfH, quality);
+      const clarityBot = buildFastClarityChain(sourceH, outW, outH - halfH, quality);
+      const splitLabel = introConsumesSourceVideo
+        ? '[0:v]setpts=PTS-STARTPTS,split=3[introsrc][topsrc][botsrc]'
+        : '[0:v]setpts=PTS-STARTPTS,split=2[topsrc][botsrc]';
+      return finalizeMainAndConcat(
+        `[toppane][botpane]vstack=inputs=2,drawbox=x=0:y=${halfH - 2}:w=${outW}:h=4:color=0xFFFFFF@0.28:t=fill,setsar=1,format=yuv420p`,
+        [
+          splitLabel,
+          `[topsrc]crop=w=${cropW}:h=${cropH}:x='${topX}':y='${topY}',${clarityTop},setsar=1[toppane]`,
+          `[botsrc]crop=w=${cropW}:h=${cropH}:x='${botX}':y='${botY}',${clarityBot},setsar=1[botpane]`,
+        ]
+      );
+    }
+
+    if (requestedMultiLayout === 'side_by_side') {
+      const halfW = computeEvenDim(outW / 2);
+      const { cropW, cropH } = computeCropWindow(sourceW, sourceH, halfW, outH, 1.0);
+      const leftX = buildMultiSpeakerCropExprForCenter({
+        centerX: primarySpk.avgCenterX,
+        centerY: primarySpk.avgCenterY,
+        sourceSize: sourceW,
+        cropSize: cropW,
+        axis: 'x',
+      });
+      const leftY = buildMultiSpeakerCropExprForCenter({
+        centerX: primarySpk.avgCenterX,
+        centerY: primarySpk.avgCenterY,
+        sourceSize: sourceH,
+        cropSize: cropH,
+        axis: 'y',
+      });
+      const rightX = buildMultiSpeakerCropExprForCenter({
+        centerX: secondarySpk.avgCenterX,
+        centerY: secondarySpk.avgCenterY,
+        sourceSize: sourceW,
+        cropSize: cropW,
+        axis: 'x',
+      });
+      const rightY = buildMultiSpeakerCropExprForCenter({
+        centerX: secondarySpk.avgCenterX,
+        centerY: secondarySpk.avgCenterY,
+        sourceSize: sourceH,
+        cropSize: cropH,
+        axis: 'y',
+      });
+      const clarityLeft = buildFastClarityChain(sourceH, halfW, outH, quality);
+      const clarityRight = buildFastClarityChain(sourceH, outW - halfW, outH, quality);
+      const splitLabel = introConsumesSourceVideo
+        ? '[0:v]setpts=PTS-STARTPTS,split=3[introsrc][leftsrc][rightsrc]'
+        : '[0:v]setpts=PTS-STARTPTS,split=2[leftsrc][rightsrc]';
+      return finalizeMainAndConcat(
+        `[leftpane][rightpane]hstack=inputs=2,drawbox=x=${halfW - 2}:y=0:w=4:h=${outH}:color=0xFFFFFF@0.28:t=fill,setsar=1,format=yuv420p`,
+        [
+          splitLabel,
+          `[leftsrc]crop=w=${cropW}:h=${cropH}:x='${leftX}':y='${leftY}',${clarityLeft},setsar=1[leftpane]`,
+          `[rightsrc]crop=w=${cropW}:h=${cropH}:x='${rightX}':y='${rightY}',${clarityRight},setsar=1[rightpane]`,
+        ]
+      );
+    }
+
+    if (requestedMultiLayout === 'picture_in_picture') {
+      const verticalZoom = sourceH >= 720 ? Math.max(1.0, Math.min(1.15, avgZoom * 0.84)) : 1.0;
+      const { cropW, cropH } = computeCropWindow(sourceW, sourceH, 9, 16, verticalZoom);
+      const xExpr = buildSmoothCropAxisExpression({
+        keyframes: intelligence.keyframes,
+        axis: 'x',
+        sourceSize: sourceW,
+        cropSize: cropW,
+      });
+      const yExpr = buildSmoothCropAxisExpression({
+        keyframes: intelligence.keyframes,
+        axis: 'y',
+        sourceSize: sourceH,
+        cropSize: cropH,
+      });
+      const clarityMain = buildFastClarityChain(sourceH, outW, outH, quality);
+      const pipW = computeEvenDim(outW * 0.30);
+      const pipH = computeEvenDim(pipW * 1.25);
+      const { cropW: pipCropW, cropH: pipCropH } = computeCropWindow(
+        sourceW,
+        sourceH,
+        pipW,
+        pipH,
+        1.12
+      );
+      const pipX = buildMultiSpeakerCropExprForCenter({
+        centerX: secondarySpk.avgCenterX,
+        centerY: secondarySpk.avgCenterY,
+        sourceSize: sourceW,
+        cropSize: pipCropW,
+        axis: 'x',
+      });
+      const pipY = buildMultiSpeakerCropExprForCenter({
+        centerX: secondarySpk.avgCenterX,
+        centerY: secondarySpk.avgCenterY,
+        sourceSize: sourceH,
+        cropSize: pipCropH,
+        axis: 'y',
+      });
+      const marginX = Math.round(outW * 0.045);
+      const marginY = Math.round(outH * 0.16);
+      const splitLabel = introConsumesSourceVideo
+        ? '[0:v]setpts=PTS-STARTPTS,split=3[introsrc][basesrc][pipsrc]'
+        : '[0:v]setpts=PTS-STARTPTS,split=2[basesrc][pipsrc]';
+      return finalizeMainAndConcat(
+        `[basepane][pippane]overlay=${outW - pipW - marginX}:${marginY},setsar=1,format=yuv420p`,
+        [
+          splitLabel,
+          `[basesrc]crop=w=${cropW}:h=${cropH}:x='${xExpr}':y='${yExpr}',${clarityMain},setsar=1[basepane]`,
+          `[pipsrc]crop=w=${pipCropW}:h=${pipCropH}:x='${pipX}':y='${pipY}',scale=${pipW}:${pipH}:flags=lanczos,drawbox=x=0:y=0:w=${pipW}:h=${pipH}:color=0xFFFFFF@0.75:t=3,setsar=1[pippane]`,
+        ]
+      );
+    }
+
+    // speaker_plus_context: top 65% tracks active speaker, bottom 35% shows wide context
+    const topH = computeEvenDim(outH * 0.65);
+    const botH = outH - topH;
+    const { cropW: topCropW, cropH: topCropH } = computeCropWindow(
+      sourceW,
+      sourceH,
+      outW,
+      topH,
+      1.12
+    );
+    const topX = buildSmoothCropAxisExpression({
       keyframes: intelligence.keyframes,
       axis: 'x',
       sourceSize: sourceW,
-      cropSize: cropW,
+      cropSize: topCropW,
     });
-    const yExpr = buildSmoothCropAxisExpression({
+    const topY = buildSmoothCropAxisExpression({
       keyframes: intelligence.keyframes,
       axis: 'y',
       sourceSize: sourceH,
-      cropSize: cropH,
+      cropSize: topCropH,
     });
+    const { cropW: wideCropW, cropH: wideCropH } = computeCropWindow(
+      sourceW,
+      sourceH,
+      outW,
+      botH,
+      1.0
+    );
+    const wideX = buildMultiSpeakerCropExprForCenter({
+      centerX: 0.5,
+      centerY: 0.48,
+      sourceSize: sourceW,
+      cropSize: wideCropW,
+      axis: 'x',
+    });
+    const wideY = buildMultiSpeakerCropExprForCenter({
+      centerX: 0.5,
+      centerY: 0.48,
+      sourceSize: sourceH,
+      cropSize: wideCropH,
+      axis: 'y',
+    });
+    const clarityTop = buildFastClarityChain(sourceH, outW, topH, quality);
+    const clarityBot = buildFastClarityChain(sourceH, outW, botH, quality);
+    const splitLabel = introConsumesSourceVideo
+      ? '[0:v]setpts=PTS-STARTPTS,split=3[introsrc][topsrc][widesrc]'
+      : '[0:v]setpts=PTS-STARTPTS,split=2[topsrc][widesrc]';
+    return finalizeMainAndConcat(
+      `[toppane][widepane]vstack=inputs=2,drawbox=x=0:y=${topH - 2}:w=${outW}:h=4:color=0xFFFFFF@0.26:t=fill,setsar=1,format=yuv420p`,
+      [
+        splitLabel,
+        `[topsrc]crop=w=${topCropW}:h=${topCropH}:x='${topX}':y='${topY}',${clarityTop},setsar=1[toppane]`,
+        `[widesrc]crop=w=${wideCropW}:h=${wideCropH}:x='${wideX}':y='${wideY}',${clarityBot},setsar=1[widepane]`,
+      ]
+    );
+  }
+
+  if (layout === 'shorts_studio_focus' || (isVerticalCanvas && requestedMultiLayout === 'wide_shot')) {
+    const isWide = requestedMultiLayout === 'wide_shot';
+    const safeZoom = isWide
+      ? 1.0
+      : sourceH >= 720
+        ? Math.max(1.06, Math.min(1.26, avgZoom * 0.85))
+        : 1.02;
+    const { cropW, cropH } = computeCropWindow(sourceW, sourceH, 8, 7, safeZoom);
+    const xExpr = isWide
+      ? buildMultiSpeakerCropExprForCenter({
+          centerX: 0.5,
+          centerY: 0.45,
+          sourceSize: sourceW,
+          cropSize: cropW,
+          axis: 'x',
+        })
+      : buildSmoothCropAxisExpression({
+          keyframes: intelligence.keyframes,
+          axis: 'x',
+          sourceSize: sourceW,
+          cropSize: cropW,
+        });
+    const yExpr = isWide
+      ? buildMultiSpeakerCropExprForCenter({
+          centerX: 0.5,
+          centerY: 0.45,
+          sourceSize: sourceH,
+          cropSize: cropH,
+          axis: 'y',
+        })
+      : buildSmoothCropAxisExpression({
+          keyframes: intelligence.keyframes,
+          axis: 'y',
+          sourceSize: sourceH,
+          cropSize: cropH,
+        });
 
     const fgW = Math.round(outW * 0.94);
-    const fgH = Math.round((fgW * 7) / 8);
+    const fgH = computeEvenDim((fgW * 7) / 8);
     const fgY = Math.round(outH * 0.215);
     const fgClarity = buildFastClarityChain(sourceH, fgW, fgH, quality);
-
-    if (introTiming) {
-      return [
-        '[0:v]setpts=PTS-STARTPTS,split=3[introsrc][bgsrc][fgsrc]',
-        buildIntroChain('[introsrc]'),
-        `[bgsrc]scale=180:320:force_original_aspect_ratio=increase:flags=fast_bilinear,crop=180:320,boxblur=6:1,eq=brightness=-0.20:contrast=1.12:saturation=1.30,scale=${outW}:${outH}:flags=fast_bilinear,setsar=1[bg]`,
-        `[fgsrc]crop=w=${cropW}:h=${cropH}:x='${xExpr}':y='${yExpr}',${fgClarity},setsar=1[fg]`,
-        `[bg][fg]overlay=(W-w)/2:${fgY},setsar=1,format=yuv420p,fps=${INTRO_FPS},setpts=PTS-STARTPTS,fade=t=in:st=0:d=0.20[main_v]`,
-        '[intro_v][main_v]concat=n=2:v=1:a=0[comp]',
-        `[comp]${assFilter}[out]`,
-      ].join(';');
-    }
-
-    // Fast low-res blur trick: blur at 180x320 then upscale cleanly (20x faster than blurring 4K!)
-    return [
-      '[0:v]setpts=PTS-STARTPTS,split=2[bgsrc][fgsrc]',
-      `[bgsrc]scale=180:320:force_original_aspect_ratio=increase:flags=fast_bilinear,crop=180:320,boxblur=6:1,eq=brightness=-0.20:contrast=1.12:saturation=1.30,scale=${outW}:${outH}:flags=fast_bilinear[bg]`,
-      `[fgsrc]crop=w=${cropW}:h=${cropH}:x='${xExpr}':y='${yExpr}',${fgClarity}[fg]`,
-      `[bg][fg]overlay=(W-w)/2:${fgY}[comp]`,
-      `[comp]${assFilter}[out]`,
-    ].join(';');
+    const splitLabel = introConsumesSourceVideo
+      ? '[0:v]setpts=PTS-STARTPTS,split=3[introsrc][bgsrc][fgsrc]'
+      : '[0:v]setpts=PTS-STARTPTS,split=2[bgsrc][fgsrc]';
+    return finalizeMainAndConcat(`[bg][fg]overlay=(W-w)/2:${fgY},setsar=1,format=yuv420p`, [
+      splitLabel,
+      `[bgsrc]scale=180:320:force_original_aspect_ratio=increase:flags=fast_bilinear,crop=180:320,boxblur=6:1,eq=brightness=-0.20:contrast=1.12:saturation=1.30,scale=${outW}:${outH}:flags=fast_bilinear,setsar=1[bg]`,
+      `[fgsrc]crop=w=${cropW}:h=${cropH}:x='${xExpr}':y='${yExpr}',${fgClarity},setsar=1[fg]`,
+    ]);
   }
 
   if (layout === 'square_1_1' || layout === 'portrait_4_5') {
@@ -1367,24 +1900,15 @@ export function buildStudioFilterComplex(params: {
     const botBand = Math.round(outH * 0.20);
     const mainBody = `crop=w=${cropW}:h=${cropH}:x='${xExpr}':y='${yExpr}',${clarity},setsar=1,format=yuv420p,drawbox=x=0:y=0:w=${outW}:h=${topBand}:color=0x000000@0.24:t=fill,drawbox=x=0:y=${outH - botBand}:w=${outW}:h=${botBand}:color=0x000000@0.28:t=fill`;
 
-    if (introTiming) {
-      return [
+    if (introConsumesSourceVideo) {
+      return finalizeMainAndConcat(`[mainsrc]${mainBody}`, [
         '[0:v]setpts=PTS-STARTPTS,split=2[introsrc][mainsrc]',
-        buildIntroChain('[introsrc]'),
-        `[mainsrc]${mainBody},fps=${INTRO_FPS},setpts=PTS-STARTPTS,fade=t=in:st=0:d=0.20[main_v]`,
-        '[intro_v][main_v]concat=n=2:v=1:a=0[comp]',
-        `[comp]${assFilter}[out]`,
-      ].join(';');
+      ]);
     }
-
-    return [
-      `[0:v]setpts=PTS-STARTPTS,${mainBody}[comp]`,
-      `[comp]${assFilter}[out]`,
-    ].join(';');
+    return finalizeMainAndConcat(`[0:v]setpts=PTS-STARTPTS,${mainBody}`);
   }
 
-  // shorts_full_bleed (DEFAULT): Edge-to-edge Full Frame 9:16 (1080x1920 or 2160x3840 4K)
-  // Smooth active-speaker auto-focus on BOTH X and Y, zero red lines, 6x faster encoding
+  // shorts_full_bleed (DEFAULT): Edge-to-edge Full Frame 9:16 with Smooth Active Speaker Pan/Crop
   const verticalZoom = sourceH >= 720 ? Math.max(1.0, Math.min(1.15, avgZoom * 0.84)) : 1.0;
   const { cropW, cropH } = computeCropWindow(sourceW, sourceH, 9, 16, verticalZoom);
   const xExpr = buildSmoothCropAxisExpression({
@@ -1405,20 +1929,12 @@ export function buildStudioFilterComplex(params: {
   const botBand = Math.round(outH * 0.20);
   const mainBody = `crop=w=${cropW}:h=${cropH}:x='${xExpr}':y='${yExpr}',${clarity},setsar=1,format=yuv420p,drawbox=x=0:y=0:w=${outW}:h=${topBand}:color=0x000000@0.24:t=fill,drawbox=x=0:y=${outH - botBand}:w=${outW}:h=${botBand}:color=0x000000@0.28:t=fill`;
 
-  if (introTiming) {
-    return [
+  if (introConsumesSourceVideo) {
+    return finalizeMainAndConcat(`[mainsrc]${mainBody}`, [
       '[0:v]setpts=PTS-STARTPTS,split=2[introsrc][mainsrc]',
-      buildIntroChain('[introsrc]'),
-      `[mainsrc]${mainBody},fps=${INTRO_FPS},setpts=PTS-STARTPTS,fade=t=in:st=0:d=0.20[main_v]`,
-      '[intro_v][main_v]concat=n=2:v=1:a=0[comp]',
-      `[comp]${assFilter}[out]`,
-    ].join(';');
+    ]);
   }
-
-  return [
-    `[0:v]setpts=PTS-STARTPTS,${mainBody}[comp]`,
-    `[comp]${assFilter}[out]`,
-  ].join(';');
+  return finalizeMainAndConcat(`[0:v]setpts=PTS-STARTPTS,${mainBody}`);
 }
 
 export async function renderClipMp4(params: {
@@ -1426,23 +1942,35 @@ export async function renderClipMp4(params: {
   clip: PodcastClip;
   layout?: ClipRenderLayout;
   quality?: ClipRenderQuality;
+  renderProfile?: BalancedRenderProfile | string;
+  cameraSettings?: Partial<CameraTrackingSettings> | null;
+  introTemplateConfig?: Partial<IntroTemplateDefinition> | null;
+  sourceFingerprint?: string;
+  renderFingerprint?: string;
   enableEmotionEffects?: boolean;
   enableAiIntro?: boolean;
   overlayStyle?: Partial<ClipOverlayStyle> | null;
   signal?: AbortSignal;
+  timeoutMs?: number;
   onProgress?: (stage: string, progress: number) => void;
 }): Promise<{
   outputPath: string;
   sizeBytes: number;
   width: number;
   height: number;
+  durationSec: number;
   sourceWidth: number;
   sourceHeight: number;
   sourceUsed: ClipRenderSource;
   layout: CanonicalStudioLayout;
   quality: CanonicalRenderQuality;
+  requestedQuality: CanonicalRenderQuality;
+  renderProfile: BalancedRenderProfile;
+  sourceFingerprint: string;
   emotionEffectsEnabled: boolean;
   introEnabled: boolean;
+  upscalePrevented: boolean;
+  upscaleNote?: string;
   resolvedIntro: ClipIntelligenceResult['intro'];
   intelligence: ClipIntelligenceResult;
 }> {
@@ -1451,22 +1979,50 @@ export async function renderClipMp4(params: {
 
   const { episode, clip } = params;
   const layout = normalizeRenderLayout(params.layout);
-  const quality = normalizeRenderQuality(params.quality);
+  const initialQuality = normalizeRenderQuality(params.quality);
+  const hasExplicitProfile =
+    typeof params.renderProfile === 'string' && params.renderProfile.trim() !== '';
+  const profileSpec = resolveBalancedRenderProfile(
+    hasExplicitProfile ? params.renderProfile : params.quality ? undefined : clip.renderProfile,
+    initialQuality
+  );
+  const quality: CanonicalRenderQuality = profileSpec.quality;
   const enableEmotionEffects = params.enableEmotionEffects !== false;
   const enableAiIntro = params.enableAiIntro !== false;
   const effectiveOverlayStyle = normalizeClipOverlayStyle(params.overlayStyle ?? clip.overlayStyle);
+  const effectiveCameraSettings = params.cameraSettings ?? clip.cameraTrackingSettings ?? null;
+  const effectiveIntroConfig = params.introTemplateConfig ?? clip.introTemplateConfig ?? null;
+
+  const sourceFingerprint =
+    params.sourceFingerprint ||
+    computeSourceFingerprint({
+      videoId: episode.videoId,
+      sourceUrl: episode.sourceUrl,
+      uploadedFileHash: getEpisodeSourceFingerprintTag(episode),
+      startSec: clip.startSec,
+      endSec: clip.endSec,
+    });
+
   const outputPath = path.join(RENDERS_DIR, `${clip.id}.mp4`);
   const tmpRenderPath = path.join(TMP_DIR, `render_${clip.id}_${Date.now()}.mp4`);
   const assPath = path.join(TMP_DIR, `${clip.id}_${Date.now()}.ass`);
+  const introAssPath = path.join(TMP_DIR, `intro_${clip.id}_${Date.now()}.ass`);
   const workDir = path.join(TMP_DIR, `work_${clip.id}_${Date.now()}`);
-  const cachedRawSegmentPath = path.join(
+  const fpSegmentCachePath = path.join(TMP_DIR, `seg_src_${sourceFingerprint}.mp4`);
+  const legacySegmentCachePath = path.join(
     TMP_DIR,
     `seg_hd_${clip.id}_${clip.startSec}_${clip.endSec}.mp4`
   );
-  const intelCachePath = path.join(
+  const cachedRawSegmentPath = fpSegmentCachePath;
+  const fpIntelCachePath = path.join(TMP_DIR, `intel_src_${sourceFingerprint}.json`);
+  const legacyIntelCachePath = path.join(
     TMP_DIR,
     `intel_${clip.id}_${clip.startSec}_${clip.endSec}.json`
   );
+  const intelCachePath =
+    fs.existsSync(fpIntelCachePath) || !fs.existsSync(legacyIntelCachePath)
+      ? fpIntelCachePath
+      : legacyIntelCachePath;
 
   fs.mkdirSync(workDir, { recursive: true });
 
@@ -1474,9 +2030,15 @@ export async function renderClipMp4(params: {
     let sourceUsed: ClipRenderSource = 'third_party_downloader';
     let rawReady = false;
 
-    if (fs.existsSync(cachedRawSegmentPath)) {
+    const candidateRawPath = fs.existsSync(fpSegmentCachePath)
+      ? fpSegmentCachePath
+      : fs.existsSync(legacySegmentCachePath)
+        ? legacySegmentCachePath
+        : null;
+
+    if (candidateRawPath) {
       try {
-        const cachedMeta = await probeVideoMeta(cachedRawSegmentPath);
+        const cachedMeta = await probeVideoMeta(candidateRawPath);
         const requestedDurationSec = Math.max(5, clip.endSec - clip.startSec);
         const cachedDurationCheck = assessSegmentDurationHealth({
           requestedDurationSec,
@@ -1484,14 +2046,16 @@ export async function renderClipMp4(params: {
           startSec: clip.startSec,
           episodeDurationSec: episode.durationSec,
         });
-        // Always discard legacy <720p, A/V-desynced, OR truncated cached segments
         if (
           cachedMeta.height < 720 ||
           !cachedMeta.syncHealth.isSynced ||
           !cachedDurationCheck.isComplete
         ) {
-          fs.unlinkSync(cachedRawSegmentPath);
+          fs.unlinkSync(candidateRawPath);
         } else {
+          if (candidateRawPath !== fpSegmentCachePath && !fs.existsSync(fpSegmentCachePath)) {
+            fs.copyFileSync(candidateRawPath, fpSegmentCachePath);
+          }
           rawReady = true;
           sourceUsed = getUploadedVideoPath(episode.id)
             ? 'uploaded_video'
@@ -1502,7 +2066,7 @@ export async function renderClipMp4(params: {
                 : 'third_party_downloader';
         }
       } catch {
-        fs.unlinkSync(cachedRawSegmentPath);
+        if (fs.existsSync(candidateRawPath)) fs.unlinkSync(candidateRawPath);
       }
     }
 
@@ -1523,32 +2087,47 @@ export async function renderClipMp4(params: {
         onProgress: params.onProgress,
       });
     } else {
-      params.onProgress?.('Memakai cache potongan video HD asli...', 28);
+      params.onProgress?.('Memakai cache sumber HD (lewati unduh ulang)...', 28);
     }
 
     throwIfAborted(params.signal);
     const rawMeta = await probeVideoMeta(cachedRawSegmentPath);
 
-    // Run parallel verbatim transcription + emotion detection + cut-aligned faceBox speaker tracking
     params.onProgress?.(
       fs.existsSync(intelCachePath)
-        ? 'Memuat analisis subtitle, auto-fokus pembicara & momen emosi AI...'
-        : 'Mentranskrip audio, melacak wajah pembicara & momen emosi AI...',
+        ? 'Memuat cache analisis AI & melacak pembicara aktif...'
+        : 'Mentranskrip audio, melacak pembicara aktif & momen emosi AI...',
       38
     );
     const intelligence = await analyzeTrimmedClipIntelligence({
       rawVideoPath: cachedRawSegmentPath,
       durationSec: rawMeta.durationSec,
       workDir,
-      cachePath: intelCachePath,
+      cachePath: fpIntelCachePath,
       episode,
       clip,
+      cameraSettings: effectiveCameraSettings,
       signal: params.signal,
     });
     throwIfAborted(params.signal);
 
     const fontEnv = ensureAssFontEnvironment();
-    const resolvedIntro = normalizeAiClipIntro(
+    const dimResolution = resolveProfileCanvasDimensions(
+      layout,
+      quality,
+      profileSpec,
+      rawMeta.width,
+      rawMeta.height
+    );
+    const { outW, outH } = dimResolution;
+    if (dimResolution.wasCappedNoUpscale && dimResolution.reason) {
+      params.onProgress?.(dimResolution.reason, 48);
+    }
+
+    let compiledIntroPlan: CompiledIntroRenderPlan | null = null;
+    let introTiming: { frameCount: number; loopExtraFrames: number; exactDurationSec: number } | null =
+      null;
+    let resolvedIntro = normalizeAiClipIntro(
       {
         tag: effectiveOverlayStyle.customIntroTag || intelligence.intro.tag,
         headline: effectiveOverlayStyle.customIntroHeadline || intelligence.intro.headline,
@@ -1562,9 +2141,30 @@ export async function renderClipMp4(params: {
         episodeTitle: episode.title,
       }
     );
-    const introTiming = enableAiIntro
-      ? computeExactIntroTiming(resolvedIntro.durationSec)
-      : null;
+    let introBackgroundMode: IntroTemplateDefinition['background']['mode'] | null = null;
+
+    if (enableAiIntro && effectiveIntroConfig) {
+      const normalizedTemplate = normalizeIntroTemplateDefinition(effectiveIntroConfig);
+      introTiming = computeExactIntroTiming(normalizedTemplate.durationSec, profileSpec.fps, 0.5, 10.0);
+      const exactDurTemplate: IntroTemplateDefinition = {
+        ...normalizedTemplate,
+        durationSec: introTiming.exactDurationSec,
+      };
+      compiledIntroPlan = compileIntroTemplateForFfmpeg({
+        template: exactDurTemplate,
+        width: outW,
+        height: outH,
+        fps: profileSpec.fps,
+      });
+      introBackgroundMode = exactDurTemplate.background.mode;
+      fs.writeFileSync(introAssPath, compiledIntroPlan.assScript, 'utf-8');
+      resolvedIntro = {
+        ...resolvedIntro,
+        durationSec: introTiming.exactDurationSec,
+      };
+    } else if (enableAiIntro) {
+      introTiming = computeExactIntroTiming(resolvedIntro.durationSec, profileSpec.fps, 2.0, 4.5);
+    }
 
     const assContent = generateStudioAssScript({
       layout,
@@ -1575,10 +2175,11 @@ export async function renderClipMp4(params: {
       durationSec: rawMeta.durationSec,
       emotionMoments: intelligence.emotionMoments,
       enableEmotionEffects,
-      intro: introTiming
-        ? { ...resolvedIntro, durationSec: introTiming.exactDurationSec }
-        : null,
-      enableAiIntro: Boolean(introTiming),
+      intro:
+        introTiming && !compiledIntroPlan
+          ? { ...resolvedIntro, durationSec: introTiming.exactDurationSec }
+          : null,
+      enableAiIntro: Boolean(introTiming && !compiledIntroPlan),
       fontName: fontEnv.fontName,
       overlayStyle: effectiveOverlayStyle,
     });
@@ -1594,6 +2195,10 @@ export async function renderClipMp4(params: {
       intelligence,
       overlayStyle: effectiveOverlayStyle,
       introTiming,
+      profileSpec,
+      compiledIntroPlan,
+      introAssPath: compiledIntroPlan ? introAssPath : null,
+      introBackgroundMode,
     });
 
     const hasAudioStream = Boolean(rawMeta.audioCodec);
@@ -1605,16 +2210,31 @@ export async function renderClipMp4(params: {
     const audioFilterChains: string[] = [];
     let audioMapTarget = '0:a?';
     let audioArgs: string[] = [];
+    const audioBitrate = `${profileSpec.audioBitrateKbps}k`;
 
     if (hasAudioStream) {
       const loudnormSuffix = effectiveOverlayStyle.normalizeAudio
         ? ',loudnorm=I=-14:TP=-1.5:LRA=11'
         : '';
       if (introTiming) {
-        const introFadeOutStart = Math.max(0.2, introTiming.exactDurationSec - 0.34).toFixed(4);
-        audioFilterChains.push(
-          `aevalsrc=exprs='${buildIntroAudioExpr()}':s=44100:d=${introTiming.exactDurationSec.toFixed(4)}:c=stereo,volume=0.22,afade=t=in:st=0:d=0.16,afade=t=out:st=${introFadeOutStart}:d=0.34,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[intro_a]`
-        );
+        const exactDur = introTiming.exactDurationSec.toFixed(4);
+        if (compiledIntroPlan) {
+          if (compiledIntroPlan.audioFilter) {
+            audioFilterChains.push(
+              `${compiledIntroPlan.audioFilter},aresample=44100,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,apad,atrim=0:${exactDur}[intro_a]`
+            );
+          } else {
+            audioFilterChains.push(
+              `anullsrc=r=44100:cl=stereo:d=${exactDur},aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[intro_a]`
+            );
+          }
+        } else {
+          const introFadeOutStart = Math.max(0.2, introTiming.exactDurationSec - 0.34).toFixed(4);
+          audioFilterChains.push(
+            `aevalsrc=exprs='${buildIntroAudioExpr()}':s=44100:d=${exactDur}:c=stereo,volume=0.22,afade=t=in:st=0:d=0.16,afade=t=out:st=${introFadeOutStart}:d=0.34,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[intro_a]`
+          );
+        }
+
         if (emotionAudioGraph) {
           audioFilterChains.push(...emotionAudioGraph.filterChains);
           audioFilterChains.push(
@@ -1628,7 +2248,7 @@ export async function renderClipMp4(params: {
           );
         }
         audioMapTarget = '[final_a]';
-        audioArgs = ['-c:a', 'aac', '-b:a', '192k'];
+        audioArgs = ['-c:a', 'aac', '-b:a', audioBitrate];
       } else if (emotionAudioGraph) {
         audioFilterChains.push(...emotionAudioGraph.filterChains);
         if (loudnormSuffix) {
@@ -1637,7 +2257,7 @@ export async function renderClipMp4(params: {
         } else {
           audioMapTarget = emotionAudioGraph.outputLabel;
         }
-        audioArgs = ['-c:a', 'aac', '-b:a', '192k'];
+        audioArgs = ['-c:a', 'aac', '-b:a', audioBitrate];
       } else if (loudnormSuffix) {
         audioMapTarget = '0:a';
         audioArgs = [
@@ -1646,14 +2266,14 @@ export async function renderClipMp4(params: {
           '-c:a',
           'aac',
           '-b:a',
-          '192k',
+          audioBitrate,
         ];
       } else {
         audioMapTarget = '0:a';
         audioArgs =
           rawMeta.audioCodec === 'aac' && rawMeta.syncHealth.isSynced
             ? ['-c:a', 'copy']
-            : ['-af', 'asetpts=PTS-STARTPTS,aresample=async=1:first_pts=0', '-c:a', 'aac', '-b:a', '192k'];
+            : ['-af', 'asetpts=PTS-STARTPTS,aresample=async=1:first_pts=0', '-c:a', 'aac', '-b:a', audioBitrate];
       }
     }
 
@@ -1662,7 +2282,6 @@ export async function renderClipMp4(params: {
         ? [videoFilterComplex, ...audioFilterChains].join(';')
         : videoFilterComplex;
 
-    const qualityLabel = quality === '4k' ? '4K Ultra HD' : '1080p Full HD';
     const layoutLabel =
       layout === 'full_16_9_focus'
         ? 'Full 16:9'
@@ -1674,27 +2293,26 @@ export async function renderClipMp4(params: {
               ? 'Portrait 4:5'
               : 'Full Frame 9:16';
     params.onProgress?.(
-      `Merender ${layoutLabel} ${qualityLabel} (0%)...`,
+      `Merender ${layoutLabel} (${profileSpec.label}, 0%)...`,
       56
     );
 
-    // High-bitrate YouTube Shorts mastering (CRF 18 High Profile):
-    // Both <video> streaming AND browser downloads use 4 MiB chunked HTTP Range requests,
-    // so large crisp master files (10 Mbps 1080p / 22 Mbps 4K) stream & download cleanly without any 32MB cap!
-    const encodePreset = CPU_COUNT <= 2 || quality === '4k' ? 'ultrafast' : 'veryfast';
-    const encodeCrf = '18';
-    const encodeMaxrate = quality === '4k' ? '22000k' : '10000k';
-    const encodeBufsize = quality === '4k' ? '44000k' : '20000k';
-    const encodeLevel = quality === '4k' ? '5.1' : '4.2';
+    const effectivePreset =
+      CPU_COUNT <= 2 && profileSpec.preset === 'slow'
+        ? 'medium'
+        : CPU_COUNT <= 2 && profileSpec.preset === 'medium'
+          ? 'veryfast'
+          : profileSpec.preset;
 
     await runFfmpegWithProgress({
       durationSec: rawMeta.durationSec + (introTiming?.exactDurationSec ?? 0),
       env: { FONTCONFIG_FILE: fontEnv.fontconfigFile },
       signal: params.signal,
+      timeoutMs: params.timeoutMs,
       onPercent: (ratio) => {
         const pct = Math.min(99, Math.round(ratio * 100));
         const overall = Math.min(95, 56 + Math.round(ratio * 39));
-        params.onProgress?.(`Merender ${layoutLabel} ${qualityLabel} (${pct}%)...`, overall);
+        params.onProgress?.(`Merender ${layoutLabel} (${profileSpec.label}, ${pct}%)...`, overall);
       },
       args: [
         '-y',
@@ -1709,21 +2327,21 @@ export async function renderClipMp4(params: {
         '-map',
         audioMapTarget,
         '-r',
-        String(INTRO_FPS),
+        String(profileSpec.fps),
         '-c:v',
-        'libx264',
+        profileSpec.videoCodec,
         '-preset',
-        encodePreset,
+        effectivePreset,
         '-crf',
-        encodeCrf,
+        String(profileSpec.crf),
         '-maxrate',
-        encodeMaxrate,
+        `${profileSpec.maxrateKbps}k`,
         '-bufsize',
-        encodeBufsize,
+        `${profileSpec.bufsizeKbps}k`,
         '-profile:v',
-        'high',
+        profileSpec.profile,
         '-level:v',
-        encodeLevel,
+        profileSpec.level,
         '-pix_fmt',
         'yuv420p',
         ...audioArgs,
@@ -1744,13 +2362,19 @@ export async function renderClipMp4(params: {
       sizeBytes: finalMeta.sizeBytes,
       width: finalMeta.width,
       height: finalMeta.height,
+      durationSec: finalMeta.durationSec,
       sourceWidth: rawMeta.width,
       sourceHeight: rawMeta.height,
       sourceUsed,
       layout,
-      quality,
+      quality: dimResolution.effectiveQuality,
+      requestedQuality: quality,
+      renderProfile: profileSpec.id,
+      sourceFingerprint,
       emotionEffectsEnabled: enableEmotionEffects,
       introEnabled: Boolean(introTiming),
+      upscalePrevented: dimResolution.wasCappedNoUpscale,
+      upscaleNote: dimResolution.reason,
       resolvedIntro: introTiming
         ? { ...resolvedIntro, durationSec: introTiming.exactDurationSec }
         : resolvedIntro,
@@ -1758,6 +2382,7 @@ export async function renderClipMp4(params: {
     };
   } finally {
     if (fs.existsSync(assPath)) fs.unlinkSync(assPath);
+    if (fs.existsSync(introAssPath)) fs.unlinkSync(introAssPath);
     if (fs.existsSync(tmpRenderPath)) fs.unlinkSync(tmpRenderPath);
     if (fs.existsSync(workDir)) fs.rmSync(workDir, { recursive: true, force: true });
   }

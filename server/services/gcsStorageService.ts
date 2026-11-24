@@ -178,7 +178,7 @@ export async function getSignedMediaUrl(params: {
 }): Promise<{ url: string; backend: 'gcs' | 'local'; expiresAt: string }> {
   const ttlSec = Math.max(
     60,
-    Math.min(86_400, params.expiresInSec ?? Number(process.env.GCS_SIGNED_URL_TTL_SEC) || 3600)
+    Math.min(86_400, params.expiresInSec ?? (Number(process.env.GCS_SIGNED_URL_TTL_SEC) || 3600))
   );
   const expiresAtMs = Date.now() + ttlSec * 1000;
   const bucketName = getBucketName();

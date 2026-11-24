@@ -1,7 +1,10 @@
 import type {
+  BalancedRenderProfile,
+  CameraTrackingSettings,
   ClipOverlayStyle,
   ClipRenderLayout,
   ClipRenderQuality,
+  IntroTemplateDefinition,
   StudioStoreState,
 } from '../types/clipper';
 import { apiFetch } from './apiClient';
@@ -15,12 +18,17 @@ export interface RenderJobCompletedPayload {
   sourceHeight?: number;
   layout: ClipRenderLayout;
   quality: ClipRenderQuality;
+  renderProfile?: BalancedRenderProfile;
+  cacheHit?: boolean;
   isUltraHd?: boolean;
+  upscalePrevented?: boolean;
+  upscaleNote?: string;
   store?: StudioStoreState;
 }
 
 export interface RenderJobError extends Error {
   code?: string;
+  status?: number;
 }
 
 interface RenderJobPollResponse {
@@ -38,10 +46,11 @@ interface RenderJobPollResponse {
 
 /**
  * Determines whether an HTTP status returned while starting or monitoring a render job
- * is transient/recoverable (e.g. Cloud Run proxy rate-limiting 429 or 5xx gateway blips).
+ * is transient/recoverable (e.g. request timeout 408, transient rate-limit 429, or 502/503/504 gateway blips).
+ * HTTP 500 is treated as a real server failure rather than silently retried.
  */
 export function isTransientRenderHttpStatus(status: number): boolean {
-  return status === 408 || status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
+  return status === 408 || status === 429 || status === 502 || status === 503 || status === 504;
 }
 
 /**
@@ -76,10 +85,62 @@ async function parseJsonSafely(res: Response): Promise<RenderJobPollResponse | n
   }
 }
 
-function makeRenderError(message: string, code?: string): RenderJobError {
+function makeRenderError(message: string, code?: string, status?: number): RenderJobError {
   const err = new Error(message) as RenderJobError;
   if (code) err.code = code;
+  if (typeof status === 'number') err.status = status;
   return err;
+}
+
+function buildFallbackErrorByStatus(status: number): { message: string; code: string } {
+  if (status === 401) {
+    return {
+      code: 'AUTH_INVALID',
+      message: 'Sesi login Google Anda berakhir atau tidak valid (HTTP 401). Silakan masuk kembali.',
+    };
+  }
+  if (status === 403) {
+    return {
+      code: 'FORBIDDEN',
+      message:
+        'Akses ditolak (HTTP 403). Periksa izin akun/paket (fitur 4K Ultra HD tersedia mulai paket Pro & Business).',
+    };
+  }
+  if (status === 400 || status === 422) {
+    return {
+      code: 'INVALID_RENDER_PARAMS',
+      message: `Parameter permintaan render atau rentang klip tidak valid (HTTP ${status}).`,
+    };
+  }
+  if (status === 404) {
+    return {
+      code: 'NOT_FOUND',
+      message: 'Klip atau episode podcast tidak ditemukan (HTTP 404).',
+    };
+  }
+  if (status === 429) {
+    return {
+      code: 'RATE_LIMITED',
+      message:
+        'Batas permintaan atau kuota sementara tercapai (HTTP 429). Tunggu sebentar atau kosongkan antrean.',
+    };
+  }
+  if (status === 503) {
+    return {
+      code: 'WORKER_UNAVAILABLE',
+      message: 'Layanan worker render sedang sibuk atau tidak tersedia sementara (HTTP 503).',
+    };
+  }
+  if (status >= 500) {
+    return {
+      code: 'SERVER_ERROR',
+      message: `Terjadi kesalahan pada server render (HTTP ${status}). Silakan coba lagi nanti.`,
+    };
+  }
+  return {
+    code: `HTTP_${status}`,
+    message: `Permintaan render tidak dapat diproses (HTTP ${status}).`,
+  };
 }
 
 /**
@@ -230,6 +291,9 @@ export async function runRenderClipJob(params: {
   clipId: string;
   layout: ClipRenderLayout;
   quality: ClipRenderQuality;
+  renderProfile?: BalancedRenderProfile;
+  cameraSettings?: Partial<CameraTrackingSettings>;
+  introTemplateConfig?: IntroTemplateDefinition;
   enableEmotionEffects?: boolean;
   enableAiIntro?: boolean;
   overlayStyle?: Partial<ClipOverlayStyle>;
@@ -242,6 +306,9 @@ export async function runRenderClipJob(params: {
     clipId,
     layout,
     quality,
+    renderProfile,
+    cameraSettings,
+    introTemplateConfig,
     enableEmotionEffects,
     enableAiIntro,
     overlayStyle,
@@ -295,6 +362,9 @@ export async function runRenderClipJob(params: {
             clipId,
             layout,
             quality,
+            ...(renderProfile ? { renderProfile } : {}),
+            ...(cameraSettings ? { cameraSettings } : {}),
+            ...(introTemplateConfig ? { introTemplateConfig } : {}),
             ...(typeof enableEmotionEffects === 'boolean' ? { enableEmotionEffects } : {}),
             ...(typeof enableAiIntro === 'boolean' ? { enableAiIntro } : {}),
             ...(overlayStyle ? { overlayStyle } : {}),
@@ -304,7 +374,9 @@ export async function runRenderClipJob(params: {
         });
         startData = await parseJsonSafely(startRes);
         if (startRes.ok) break;
-        if (isTransientRenderHttpStatus(startRes.status) && attempt < 4) {
+        const isMonthlyQuota429 = startRes.status === 429 && startData?.code === 'USAGE_LIMIT_REACHED';
+        const maxAttemptsForStatus = startRes.status === 503 ? 2 : 4;
+        if (!isMonthlyQuota429 && isTransientRenderHttpStatus(startRes.status) && attempt < maxAttemptsForStatus) {
           const waitMs = computeRenderBackoffMs({
             status: startRes.status,
             attempt,
@@ -315,22 +387,18 @@ export async function runRenderClipJob(params: {
           await sleepWithAbort(waitMs, signal);
           continue;
         }
-        if (startRes.status === 429) {
-          throw makeRenderError(
-            'Server render sedang penuh atau terkena batas sementara (HTTP 429). Klik "Kosongkan Antrean & Coba Lagi" untuk membebaskan proses lama.',
-            'RATE_LIMITED'
-          );
-        }
+        const fallback = buildFallbackErrorByStatus(startRes.status);
         throw makeRenderError(
-          startData?.error || `Server render menolak permintaan (HTTP ${startRes.status}).`,
-          startData?.code
+          startData?.error || fallback.message,
+          startData?.code || fallback.code,
+          startRes.status
         );
       } catch (err) {
         if (signal?.aborted) {
           dispatchServerCancelOnce();
           throw makeRenderError('Proses render dibatalkan oleh pengguna.', 'CANCELLED');
         }
-        if (err instanceof Error && (err as RenderJobError).code) {
+        if (err instanceof Error && ((err as RenderJobError).code || (err as RenderJobError).status)) {
           throw err;
         }
         if (attempt >= 4) {

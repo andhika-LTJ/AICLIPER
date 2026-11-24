@@ -4,11 +4,21 @@ import fs from 'fs';
 import path from 'path';
 import { promisify } from 'util';
 import type {
+  CameraAnalysisResult,
+  CameraTrackingSettings,
   CaptionCue,
   EmotionMoment,
+  FaceTrackCandidate,
   PodcastClip,
   PodcastEpisode,
 } from '../src/types/clipper.ts';
+import type { CvAnalyzeResponse } from '../workers/cv_service/contract.ts';
+import {
+  decideCameraTrackingTimeline,
+  extractAudioSpeechActivity,
+  normalizeCameraTrackingSettings,
+  type AudioSpeechWindow,
+} from './services/activeSpeakerEngine.ts';
 import {
   mergeAnchoredWindowCues,
   planAudioTranscriptionWindows,
@@ -29,7 +39,7 @@ import {
 
 const execFileAsync = promisify(execFile);
 
-const INTELLIGENCE_CACHE_VERSION = 5;
+const INTELLIGENCE_CACHE_VERSION = 6;
 
 export interface ClipIntelligenceResult {
   version?: number;
@@ -44,6 +54,8 @@ export interface ClipIntelligenceResult {
   emotionMoments: EmotionMoment[];
   emotionSummary: string;
   intro: AiClipIntro;
+  cameraAnalysis?: CameraAnalysisResult;
+  vadWindows?: AudioSpeechWindow[];
 }
 
 export interface PlannedSamplePoint {
@@ -625,13 +637,99 @@ function getSpokenContextNearTime(cues: CaptionCue[], timeSec: number): string {
   return nearby ? nearby.slice(0, 120) : '';
 }
 
+export function buildKeyframesFromCameraAnalysis(
+  analysis: CameraAnalysisResult,
+  durationSec: number
+): SpeakerKeyframe[] {
+  if (!analysis.cameraSegments || analysis.cameraSegments.length === 0) {
+    return normalizeSpeakerKeyframes([], durationSec);
+  }
+  const raw: SpeakerKeyframe[] = analysis.cameraSegments.map((seg, idx) => {
+    const faceMatch = analysis.faceTracks.find(
+      (ft) =>
+        ft.speakerKey === seg.activeSpeakerKey &&
+        ft.timeSec >= seg.startSec - 0.5 &&
+        ft.timeSec <= seg.endSec + 0.5
+    );
+    const faceBox: [number, number, number, number] | undefined = faceMatch
+      ? [
+          Math.round(faceMatch.y * 1000),
+          Math.round(faceMatch.x * 1000),
+          Math.round((faceMatch.y + faceMatch.height) * 1000),
+          Math.round((faceMatch.x + faceMatch.width) * 1000),
+        ]
+      : undefined;
+    return {
+      timeSec: seg.startSec,
+      focusX: seg.targetX,
+      focusY: seg.targetY,
+      zoomScale: seg.zoom,
+      isSceneCut: idx > 0,
+      speakerLabel:
+        analysis.speakers.find((s) => s.speakerKey === seg.activeSpeakerKey)?.label ||
+        seg.activeSpeakerKey,
+      ...(faceBox ? { faceBox } : {}),
+    };
+  });
+  return normalizeSpeakerKeyframes(raw, durationSec);
+}
+
+async function tryCvWorkerFaceTracking(params: {
+  rawVideoPath: string;
+  durationSec: number;
+  signal?: AbortSignal;
+}): Promise<FaceTrackCandidate[] | null> {
+  const workerUrl = (process.env.CV_WORKER_URL || '').trim().replace(/\/+$/, '');
+  if (!workerUrl) return null;
+  try {
+    const res = await fetch(`${workerUrl}/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sourceUri: params.rawVideoPath,
+        startSec: 0,
+        endSec: params.durationSec,
+        sampleFps: 2,
+      }),
+      signal: combineAbortSignal(12_000, params.signal),
+    });
+    if (!res.ok) return null;
+    const payload = (await res.json()) as CvAnalyzeResponse;
+    if (!Array.isArray(payload.frames) || payload.frames.length === 0) return null;
+    const tracks: FaceTrackCandidate[] = [];
+    for (const frame of payload.frames) {
+      for (const face of frame.faces || []) {
+        tracks.push({
+          speakerKey: face.trackId || 'speaker_1',
+          speakerLabel: face.trackId || 'Pembicara',
+          timeSec: frame.timeSec,
+          x: face.x,
+          y: face.y,
+          width: face.width,
+          height: face.height,
+          mouthActivity: face.mouthAspectRatio,
+          trackingConfidence: face.confidence,
+          occluded: Boolean(face.occluded),
+        });
+      }
+    }
+    return tracks.length > 0 ? tracks : null;
+  } catch {
+    return null;
+  }
+}
+
 async function detectSpeakerBatchWithGemini(params: {
   ai: GoogleGenAI;
   audioBase64: string;
   batchFrames: Array<{ timeSec: number; isSceneCut: boolean; base64: string; spokenHint?: string }>;
   durationSec: number;
   signal?: AbortSignal;
-}): Promise<{ keyframes: SpeakerKeyframe[]; summary: string } | null> {
+}): Promise<{
+  keyframes: SpeakerKeyframe[];
+  faceTracks: FaceTrackCandidate[];
+  summary: string;
+} | null> {
   const { ai, audioBase64, batchFrames, durationSec, signal } = params;
   if (batchFrames.length === 0 || signal?.aborted) return null;
 
@@ -664,13 +762,18 @@ async function detectSpeakerBatchWithGemini(params: {
 
 Periksa setiap ${batchFrames.length} frame DI ATAS SECARA INDEPENDEN (JANGAN menyalin koordinat dari frame lain jika kameranya berbeda!).
 Keluarkan tepat ${batchFrames.length} objek keyframe yang cocok 1-ke-1 dengan timestamp setiap frame:
-1. Hitung \`visiblePeopleCount\`: berapa jumlah orang yang BENAR-BENAR TERLIHAT wajahnya pada frame tersebut (misalnya 1, 2, atau 3).
-2. ATURAN MUTLAK:
-   - Jika \`visiblePeopleCount === 1\` (kamera close-up 1 orang): WAJIB kunci kotak wajah (\`faceBox\`) orang tunggal yang terlihat di frame itu dengan akurat! JANGAN PERNAH menggeser fokus ke area dinding kosong atau orang yang tidak ada di gambar!
-   - Jika \`visiblePeopleCount >= 2\` (kamera 2 orang / wide shot): cocokkan audio & teks ucapan pada detik tersebut dengan ekspresi wajah (mulut terbuka, gestur tangan, menoleh/menghadap mikrofon) lalu kunci \`faceBox\` orang yang SEDANG BERBICARA AKTIF!
-3. Format \`faceBox\`: \`[ymin, xmin, ymax, xmax]\` dalam skala integer 0 sampai 1000 (0 = tepi atas/kiri gambar ini, 1000 = tepi bawah/kanan gambar ini) tepat melingkupi kepala & wajah target pada frame ini.
-4. Isi \`focusX\` = (xmin + xmax) / 2000 (0.08–0.92), \`focusY\` = (ymin + ymax) / 2000 (0.18–0.72), \`zoomScale\` (1.04 untuk close-up 1 orang, 1.24–1.34 untuk wide shot banyak orang), \`isSceneCut\`, dan \`speakerLabel\`.
-5. Tambahkan \`summary\` 1 kalimat singkat Bahasa Indonesia.`,
+1. Deteksi SEMUA wajah yang terlihat pada frame tersebut di array \`visibleFaces\`:
+   - \`speakerKey\`: ID konsisten per orang (misalnya \`speaker_left\`, \`speaker_right\`, \`host\`, \`guest\`).
+   - \`speakerLabel\`: Label singkat orang (misal \`Host\`, \`Tamu 1\`).
+   - \`faceBox\`: \`[ymin, xmin, ymax, xmax]\` integer 0–1000 melingkupi wajah & kepala orang tersebut.
+   - \`mouthActivity\`: skor 0.0–1.0 apakah mulut & ekspresi wajah orang tersebut sinkron dengan audio ucapan pada detik itu (0.0 = diam, 0.85+ = berbicara aktif).
+   - \`trackingConfidence\`: skor 0.0–1.0 kejernihan wajah.
+   - \`diarizationConfidence\`: skor 0.0–1.0 kesesuaian suara dengan konteks percakapan.
+2. ATURAN MUTLAK PEMBICARA UTAMA:
+   - Jika hanya 1 wajah terlihat: kunci wajah orang tersebut dengan akurat!
+   - Jika 2+ wajah terlihat: pilih wajah yang mulut & gesturnya paling sinkron dengan suara ucapan pada detik tersebut. Orang yang hanya mendengarkan/diam HARUS diberi \`mouthActivity <= 0.15\`.
+3. Isi \`faceBox\` utama milik pembicara aktif, \`focusX\` = (xmin + xmax) / 2000 (0.08–0.92), \`focusY\` = (ymin + ymax) / 2000 (0.18–0.72), \`zoomScale\` (1.04 close-up, 1.2–1.34 wide shot), \`isSceneCut\`, \`visiblePeopleCount\`, dan \`speakerLabel\`.
+4. Tambahkan \`summary\` 1 kalimat singkat Bahasa Indonesia.`,
   });
 
   const schema = {
@@ -693,6 +796,25 @@ Keluarkan tepat ${batchFrames.length} objek keyframe yang cocok 1-ke-1 dengan ti
             zoomScale: { type: Type.NUMBER },
             isSceneCut: { type: Type.BOOLEAN },
             speakerLabel: { type: Type.STRING },
+            visibleFaces: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  speakerKey: { type: Type.STRING },
+                  speakerLabel: { type: Type.STRING },
+                  faceBox: {
+                    type: Type.ARRAY,
+                    items: { type: Type.INTEGER },
+                  },
+                  mouthActivity: { type: Type.NUMBER },
+                  trackingConfidence: { type: Type.NUMBER },
+                  diarizationConfidence: { type: Type.NUMBER },
+                  occluded: { type: Type.BOOLEAN },
+                },
+                required: ['speakerKey', 'faceBox', 'mouthActivity', 'trackingConfidence'],
+              },
+            },
           },
           required: [
             'timeSec',
@@ -732,10 +854,20 @@ Keluarkan tepat ${batchFrames.length} objek keyframe yang cocok 1-ke-1 dengan ti
           SpeakerKeyframe & {
             visiblePeopleCount?: number;
             faceBox?: number[];
+            visibleFaces?: Array<{
+              speakerKey?: string;
+              speakerLabel?: string;
+              faceBox?: number[];
+              mouthActivity?: number;
+              trackingConfidence?: number;
+              diarizationConfidence?: number;
+              occluded?: boolean;
+            }>;
           }
         >;
       };
       if (Array.isArray(parsed.keyframes) && parsed.keyframes.length > 0) {
+        const faceTracks: FaceTrackCandidate[] = [];
         const mapped: SpeakerKeyframe[] = parsed.keyframes.map((k, idx) => {
           const refFrame = batchFrames[Math.min(idx, batchFrames.length - 1)];
           const validBox =
@@ -752,6 +884,61 @@ Keluarkan tepat ${batchFrames.length} objek keyframe yang cocok 1-ke-1 dengan ti
             Math.abs(Number(k.timeSec) - refFrame.timeSec) <= 1.2
               ? Number(k.timeSec)
               : refFrame.timeSec;
+
+          if (Array.isArray(k.visibleFaces) && k.visibleFaces.length > 0) {
+            for (const vf of k.visibleFaces) {
+              if (!Array.isArray(vf.faceBox) || vf.faceBox.length !== 4) continue;
+              const [ymin, xmin, ymax, xmax] = vf.faceBox.map((v) =>
+                Math.max(0, Math.min(1000, Number(v) || 0))
+              );
+              const wNorm = Math.max(0.06, (xmax - xmin) / 1000);
+              const hNorm = Math.max(0.08, (ymax - ymin) / 1000);
+              const xNorm = xmin / 1000;
+              const yNorm = ymin / 1000;
+              const key =
+                (vf.speakerKey || '').trim().toLowerCase().replace(/[^a-z0-9_]/g, '_') ||
+                (xNorm + wNorm / 2 < 0.45 ? 'speaker_left' : xNorm + wNorm / 2 > 0.55 ? 'speaker_right' : 'speaker_center');
+              faceTracks.push({
+                speakerKey: key,
+                speakerLabel: vf.speakerLabel?.trim() || key,
+                timeSec,
+                x: Number(xNorm.toFixed(4)),
+                y: Number(yNorm.toFixed(4)),
+                width: Number(wNorm.toFixed(4)),
+                height: Number(hNorm.toFixed(4)),
+                mouthActivity: Math.max(0, Math.min(1, Number(vf.mouthActivity ?? 0.5))),
+                trackingConfidence: Math.max(0, Math.min(1, Number(vf.trackingConfidence ?? 0.8))),
+                diarizationConfidence: Math.max(0, Math.min(1, Number(vf.diarizationConfidence ?? 0.65))),
+                occluded: Boolean(vf.occluded),
+              });
+            }
+          } else if (validBox) {
+            const [ymin, xmin, ymax, xmax] = validBox.map((v) =>
+              Math.max(0, Math.min(1000, Number(v) || 0))
+            );
+            const xNorm = xmin / 1000;
+            const yNorm = ymin / 1000;
+            const wNorm = Math.max(0.08, (xmax - xmin) / 1000);
+            const hNorm = Math.max(0.1, (ymax - ymin) / 1000);
+            const cleanLabel = k.speakerLabel?.trim() || 'Pembicara Utama';
+            const key =
+              cleanLabel.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') ||
+              (xNorm + wNorm / 2 < 0.45 ? 'speaker_left' : xNorm + wNorm / 2 > 0.55 ? 'speaker_right' : 'host');
+            faceTracks.push({
+              speakerKey: key,
+              speakerLabel: cleanLabel,
+              timeSec,
+              x: Number(xNorm.toFixed(4)),
+              y: Number(yNorm.toFixed(4)),
+              width: Number(wNorm.toFixed(4)),
+              height: Number(hNorm.toFixed(4)),
+              mouthActivity: 0.84,
+              trackingConfidence: 0.88,
+              diarizationConfidence: 0.78,
+              occluded: false,
+            });
+          }
+
           return {
             timeSec,
             focusX: k.focusX,
@@ -764,6 +951,7 @@ Keluarkan tepat ${batchFrames.length} objek keyframe yang cocok 1-ke-1 dengan ti
         });
         return {
           keyframes: mapped,
+          faceTracks,
           summary: parsed.summary?.trim() || '',
         };
       }
@@ -776,20 +964,32 @@ Keluarkan tepat ${batchFrames.length} objek keyframe yang cocok 1-ke-1 dengan ti
 }
 
 /**
- * Splits cut-aligned frames into small focused batches of 4 frames processed in parallel.
- * This eliminates multi-frame vision attention drift / coordinate copy-pasting across camera cuts
- * while keeping total latency fast (~4–6s).
+ * Splits cut-aligned frames into small focused batches processed in parallel,
+ * checks optional CV_WORKER_URL (MediaPipe/OpenCV sidecar), runs FFmpeg Audio VAD,
+ * and computes a stabilized active-speaker timeline with hysteresis, cooldown,
+ * min-shot-duration, confidence threshold, and tracking recovery.
  */
 async function detectActiveSpeakerWithGemini(params: {
   ai: GoogleGenAI;
+  clip: PodcastClip;
+  rawVideoPath: string;
   audioBase64: string;
   frames: Array<{ timeSec: number; isSceneCut: boolean; base64: string }>;
   cues: CaptionCue[];
   durationSec: number;
+  vadWindows: AudioSpeechWindow[];
   signal?: AbortSignal;
-}): Promise<{ keyframes: SpeakerKeyframe[]; summary: string } | null> {
-  const { ai, audioBase64, frames, cues, durationSec, signal } = params;
+}): Promise<{
+  keyframes: SpeakerKeyframe[];
+  cameraAnalysis: CameraAnalysisResult;
+  summary: string;
+} | null> {
+  const { ai, clip, rawVideoPath, audioBase64, frames, cues, durationSec, vadWindows, signal } =
+    params;
   if (frames.length === 0 || signal?.aborted) return null;
+
+  // Check optional CV worker first; fall back seamlessly to multi-face Gemini vision
+  const cvTracks = await tryCvWorkerFaceTracking({ rawVideoPath, durationSec, signal });
 
   const enrichedFrames = frames.map((f) => ({
     ...f,
@@ -802,39 +1002,95 @@ async function detectActiveSpeakerWithGemini(params: {
     batches.push(enrichedFrames.slice(i, i + batchSize));
   }
 
-  const batchResults = await Promise.all(
-    batches.map((batchFrames) =>
-      detectSpeakerBatchWithGemini({
-        ai,
-        audioBase64,
-        batchFrames,
-        durationSec,
-        signal,
-      })
-    )
-  );
+  const batchResults = cvTracks
+    ? []
+    : await Promise.all(
+        batches.map((batchFrames) =>
+          detectSpeakerBatchWithGemini({
+            ai,
+            audioBase64,
+            batchFrames,
+            durationSec,
+            signal,
+          })
+        )
+      );
 
   const combinedKeyframes: SpeakerKeyframe[] = [];
+  const combinedFaceTracks: FaceTrackCandidate[] = cvTracks ? [...cvTracks] : [];
   let summary = '';
   for (const res of batchResults) {
     if (!res) continue;
     combinedKeyframes.push(...res.keyframes);
+    combinedFaceTracks.push(...res.faceTracks);
     if (!summary && res.summary) summary = res.summary;
   }
 
-  if (combinedKeyframes.length === 0) return null;
+  if (combinedFaceTracks.length === 0 && combinedKeyframes.length === 0) return null;
+
+  const cameraAnalysis = decideCameraTrackingTimeline({
+    clipId: clip.id,
+    durationSec,
+    faceTracks: combinedFaceTracks,
+    audioWindows: vadWindows,
+    settings: clip.cameraTrackingSettings,
+  });
+
+  const stabilizedKeyframes =
+    cameraAnalysis.cameraSegments.length > 0
+      ? buildKeyframesFromCameraAnalysis(cameraAnalysis, durationSec)
+      : normalizeSpeakerKeyframes(combinedKeyframes, durationSec);
 
   return {
-    keyframes: normalizeSpeakerKeyframes(combinedKeyframes, durationSec),
+    keyframes: stabilizedKeyframes,
+    cameraAnalysis,
     summary:
       summary ||
-      'Auto-fokus presisi melacak wajah pembicara aktif di setiap pergantian sudut kamera.',
+      `Active speaker tracking (${cameraAnalysis.speakers.length} wajah terdeteksi, stabilitas ${Math.round(cameraAnalysis.metrics.stabilityScore * 100)}%).`,
   };
 }
 
 /**
- * Analyzes the trimmed source clip's real audio & cut-aligned frames (with disk cache v2 per clip segment)
- * to produce 100% verbatim subtitles, auto title/caption, precision faceBox active-speaker tracking,
+ * Re-calculates camera framing timeline quickly from persisted faceTracks and user camera settings
+ * without re-downloading source video or re-calling Gemini API.
+ */
+export function recalculateClipCameraAnalysis(params: {
+  clipId: string;
+  durationSec: number;
+  faceTracks: FaceTrackCandidate[];
+  audioWindows?: AudioSpeechWindow[];
+  settings?: Partial<CameraTrackingSettings> | null;
+  manualOverrides?: Array<{
+    startSec: number;
+    endSec: number;
+    activeSpeakerKey: string;
+    framingMode?: CameraTrackingSettings['framingMode'];
+    layoutMode?: CameraTrackingSettings['multiSpeakerLayout'];
+    targetX?: number;
+    targetY?: number;
+    zoom?: number;
+  }>;
+}): {
+  cameraAnalysis: CameraAnalysisResult;
+  keyframes: SpeakerKeyframe[];
+} {
+  const cameraAnalysis = decideCameraTrackingTimeline({
+    clipId: params.clipId,
+    durationSec: params.durationSec,
+    faceTracks: params.faceTracks,
+    audioWindows: params.audioWindows,
+    settings: params.settings ?? undefined,
+    manualOverrides: params.manualOverrides,
+  });
+  return {
+    cameraAnalysis,
+    keyframes: buildKeyframesFromCameraAnalysis(cameraAnalysis, params.durationSec),
+  };
+}
+
+/**
+ * Analyzes the trimmed source clip's real audio & cut-aligned frames (with disk cache v6 per source fingerprint)
+ * to produce 100% verbatim subtitles, auto title/caption, precision Active Speaker tracking,
  * and automatic AI emotion retention moments (audio SFX + kinetic animations).
  */
 export async function analyzeTrimmedClipIntelligence(params: {
@@ -844,9 +1100,11 @@ export async function analyzeTrimmedClipIntelligence(params: {
   cachePath?: string;
   episode: PodcastEpisode;
   clip: PodcastClip;
+  cameraSettings?: Partial<CameraTrackingSettings> | null;
   signal?: AbortSignal;
 }): Promise<ClipIntelligenceResult> {
-  const { rawVideoPath, durationSec, workDir, cachePath, episode, clip, signal } = params;
+  const { rawVideoPath, durationSec, workDir, cachePath, episode, clip, cameraSettings, signal } =
+    params;
   const checkAborted = () => {
     if (signal?.aborted) {
       const err = new Error('Proses analisis klip dibatalkan oleh pengguna.');
@@ -869,6 +1127,25 @@ export async function analyzeTrimmedClipIntelligence(params: {
         cached.keyframes.length > 0 &&
         Array.isArray(cached.emotionMoments)
       ) {
+        // Re-apply latest user cameraSettings instantly on cache hit so edits never need Gemini re-analysis
+        if (cached.cameraAnalysis && cached.cameraAnalysis.faceTracks.length > 0) {
+          const effectiveSettings = normalizeCameraTrackingSettings(
+            clip.id,
+            cameraSettings ?? clip.cameraTrackingSettings ?? cached.cameraAnalysis.settings
+          );
+          const recalc = recalculateClipCameraAnalysis({
+            clipId: clip.id,
+            durationSec,
+            faceTracks: cached.cameraAnalysis.faceTracks,
+            audioWindows: cached.vadWindows,
+            settings: effectiveSettings,
+          });
+          return {
+            ...cached,
+            cameraAnalysis: recalc.cameraAnalysis,
+            keyframes: recalc.keyframes,
+          };
+        }
         return cached;
       }
     } catch {
@@ -899,6 +1176,13 @@ export async function analyzeTrimmedClipIntelligence(params: {
     }
   );
 
+  const fallbackAnalysis = decideCameraTrackingTimeline({
+    clipId: clip.id,
+    durationSec,
+    faceTracks: [],
+    settings: cameraSettings ?? clip.cameraTrackingSettings,
+  });
+
   const fallbackResult: ClipIntelligenceResult = {
     version: INTELLIGENCE_CACHE_VERSION,
     cues: guaranteedFallbackCues,
@@ -910,10 +1194,11 @@ export async function analyzeTrimmedClipIntelligence(params: {
     hashtags: clip.platformCopies.youtube_shorts.hashtags,
     subtitleSource: 'existing_fallback',
     keyframes: normalizeSpeakerKeyframes([], durationSec),
-    speakerFocusSummary: 'Fokus kamera otomatis di tengah pembicara.',
+    speakerFocusSummary: 'Fokus kamera aman (tengah pembicara).',
     emotionMoments: [],
     emotionSummary: 'Efek emosi otomatis siap saat analisis AI aktif.',
     intro: fallbackIntro,
+    cameraAnalysis: fallbackAnalysis,
   };
 
   const ai = getAiClient();
@@ -923,12 +1208,15 @@ export async function analyzeTrimmedClipIntelligence(params: {
 
   try {
     checkAborted();
-    const { audioBase64, audioWindows, frames } = await extractClipAudioAndSmartFrames({
-      rawVideoPath,
-      durationSec,
-      workDir,
-      signal,
-    });
+    const [{ audioBase64, audioWindows, frames }, vadWindows] = await Promise.all([
+      extractClipAudioAndSmartFrames({
+        rawVideoPath,
+        durationSec,
+        workDir,
+        signal,
+      }),
+      extractAudioSpeechActivity(rawVideoPath, durationSec),
+    ]);
 
     checkAborted();
     const sttAndEmotion = await transcribeVerbatimAndAnalyzeEmotions({
@@ -944,10 +1232,19 @@ export async function analyzeTrimmedClipIntelligence(params: {
     checkAborted();
     const speakerResult = await detectActiveSpeakerWithGemini({
       ai,
+      clip: {
+        ...clip,
+        cameraTrackingSettings: normalizeCameraTrackingSettings(
+          clip.id,
+          cameraSettings ?? clip.cameraTrackingSettings
+        ),
+      },
+      rawVideoPath,
       audioBase64,
       frames,
       cues: sttAndEmotion?.cues ?? fallbackResult.cues,
       durationSec,
+      vadWindows,
       signal,
     });
 
@@ -968,6 +1265,8 @@ export async function analyzeTrimmedClipIntelligence(params: {
       emotionMoments: sttAndEmotion?.emotionMoments ?? fallbackResult.emotionMoments,
       emotionSummary: sttAndEmotion?.emotionSummary ?? fallbackResult.emotionSummary,
       intro: sttAndEmotion?.intro ?? fallbackResult.intro,
+      cameraAnalysis: speakerResult?.cameraAnalysis ?? fallbackAnalysis,
+      vadWindows,
     };
 
     if (cachePath && finalResult.subtitleSource === 'audio_transcribed') {

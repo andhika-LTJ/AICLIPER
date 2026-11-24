@@ -117,17 +117,23 @@ export function normalizeAiClipIntro(
  * Computes exact integer frame count at 30fps so intro video duration and intro audio duration
  * match to the exact millisecond (0ms lip-sync drift after concat!).
  */
-export function computeExactIntroTiming(durationSec = DEFAULT_INTRO_DURATION_SEC): {
+export function computeExactIntroTiming(
+  durationSec = DEFAULT_INTRO_DURATION_SEC,
+  fps = INTRO_FPS,
+  minSec = 2.0,
+  maxSec = 4.5
+): {
   frameCount: number;
   loopExtraFrames: number;
   exactDurationSec: number;
 } {
-  const clamped = Math.max(2.0, Math.min(4.5, Number(durationSec) || DEFAULT_INTRO_DURATION_SEC));
-  const frameCount = Math.round(clamped * INTRO_FPS);
+  const safeFps = Math.max(15, Math.min(60, Number(fps) || INTRO_FPS));
+  const clamped = Math.max(minSec, Math.min(maxSec, Number(durationSec) || DEFAULT_INTRO_DURATION_SEC));
+  const frameCount = Math.round(clamped * safeFps);
   return {
     frameCount,
     loopExtraFrames: Math.max(1, frameCount - 1),
-    exactDurationSec: Number((frameCount / INTRO_FPS).toFixed(4)),
+    exactDurationSec: Number((frameCount / safeFps).toFixed(4)),
   };
 }
 

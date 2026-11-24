@@ -30,17 +30,22 @@ import {
 import { buildDistributionLog, dispatchWebhookIfConfigured } from './server/store.ts';
 import {
   getTargetCanvasDimensions,
+  isValidRenderLayoutInput,
+  isValidRenderProfileInput,
+  isValidRenderQualityInput,
   normalizeRenderLayout,
   normalizeRenderQuality,
   resolveEffectiveRenderQuality,
 } from './server/speakerFocusMath.ts';
 import {
+  getEpisodeSourceFingerprintTag,
   getRenderedClipPath,
   getUploadTargetPath,
   hasYoutubeCookies,
   invalidateLowResSegmentCache,
   RenderCancelledError,
   renderClipMp4,
+  RenderTimeoutError,
   saveYoutubeCookies,
   YoutubeBotCheckError,
 } from './server/videoClipper.ts';
@@ -62,6 +67,23 @@ import {
 } from './server/youtubeUploader.ts';
 import { createV2Router, normalizeClippingApproach } from './server/routes/v2Routes.ts';
 import { V2Repository } from './server/repositories/v2Repository.ts';
+import { createV3Router } from './server/routes/v3ProductionRoutes.ts';
+import { V3Repository } from './server/repositories/v3Repository.ts';
+import { normalizeCameraTrackingSettings } from './server/services/activeSpeakerEngine.ts';
+import { normalizeIntroTemplateDefinition } from './server/services/introRenderCompiler.ts';
+import {
+  BALANCED_RENDER_PROFILES,
+  computeRenderFingerprint,
+  computeSourceFingerprint,
+  resolveBalancedRenderProfile,
+  type BalancedRenderProfileSpec,
+} from './server/services/renderFingerprint.ts';
+import { enqueueCloudTask } from './server/services/cloudTasksService.ts';
+import {
+  dispatchCloudRunRenderJob,
+  isCloudRunJobsConfigured,
+} from './server/services/cloudRunJobsService.ts';
+import { finalizeRenderWorkerOutput } from './workers/renderWorker.ts';
 import { GoogleTokenVerificationError } from './server/googleAuthVerifier.ts';
 import {
   getAvailableFfmpegPathSync,
@@ -102,6 +124,10 @@ export interface CreateAppOptions {
   db?: KlipCastDatabase;
   verifyToken?: FirebaseTokenVerifierFn;
   disableRateLimit?: boolean;
+  renderClipFn?: typeof renderClipMp4;
+  dispatchCloudRunJobFn?: typeof dispatchCloudRunRenderJob;
+  enqueueCloudTaskFn?: typeof enqueueCloudTask;
+  requireExternalWorker?: boolean;
 }
 
 function attachSignedVideoUrls(uid: string, clips: PodcastClip[]): PodcastClip[] {
@@ -197,6 +223,10 @@ export function createApp(options: CreateAppOptions = {}) {
       db,
       verifyToken: options.verifyToken,
     });
+
+  const renderClipExec = options.renderClipFn ?? renderClipMp4;
+  const dispatchCloudRunJobExec = options.dispatchCloudRunJobFn ?? dispatchCloudRunRenderJob;
+  const enqueueCloudTaskExec = options.enqueueCloudTaskFn ?? enqueueCloudTask;
 
   const renderJobManager = new RenderJobManager(60 * 60 * 1000, db);
 
@@ -639,6 +669,24 @@ export function createApp(options: CreateAppOptions = {}) {
           ? normalizeClipOverlayStyle(patch.overlayStyle)
           : existing.overlayStyle;
 
+    const nextCameraSettings =
+      patch.cameraTrackingSettings === null
+        ? undefined
+        : patch.cameraTrackingSettings
+          ? normalizeCameraTrackingSettings(existing.id, patch.cameraTrackingSettings)
+          : existing.cameraTrackingSettings;
+
+    const nextIntroTemplateConfig =
+      patch.introTemplateConfig === null
+        ? undefined
+        : patch.introTemplateConfig
+          ? normalizeIntroTemplateDefinition(patch.introTemplateConfig)
+          : existing.introTemplateConfig;
+
+    const nextRenderProfile = patch.renderProfile
+      ? resolveBalancedRenderProfile(patch.renderProfile).id
+      : existing.renderProfile;
+
     const updatedClip: PodcastClip = {
       ...existing,
       ...(typeof patch.title === 'string' ? { title: patch.title.slice(0, 140) } : {}),
@@ -658,6 +706,9 @@ export function createApp(options: CreateAppOptions = {}) {
       startSec: nextRange.startSec,
       endSec: nextRange.endSec,
       overlayStyle: nextOverlayStyle,
+      cameraTrackingSettings: nextCameraSettings,
+      introTemplateConfig: nextIntroTemplateConfig,
+      renderProfile: nextRenderProfile,
       ...(rangeChanged
         ? {
             renderedClipUrl: undefined,
@@ -1157,7 +1208,10 @@ export function createApp(options: CreateAppOptions = {}) {
         res.status(err.status).json({ code: err.code, error: err.message });
         return;
       }
-      res.status(403).json({ error: 'Kuota unggah tercapai.' });
+      res.status(500).json({
+        code: 'QUOTA_CHECK_FAILED',
+        error: sanitizePublicErrorMessage(err, 'Gagal memeriksa kuota unggah video.'),
+      });
       return;
     }
 
@@ -1515,7 +1569,9 @@ export function createApp(options: CreateAppOptions = {}) {
     req.on('close', cleanup);
   });
 
-  const handleEnqueueRender = (
+  const v3Repo = new V3Repository(db);
+
+  const handleEnqueueRender = async (
     req: AuthenticatedRequest,
     res: express.Response,
     explicitClipId?: string
@@ -1526,6 +1582,9 @@ export function createApp(options: CreateAppOptions = {}) {
       clipId?: string;
       layout?: ClipRenderLayout;
       quality?: ClipRenderQuality | string;
+      renderProfile?: string;
+      cameraSettings?: Partial<PodcastClip['cameraTrackingSettings']> | null;
+      introTemplateConfig?: PodcastClip['introTemplateConfig'] | null;
       enableEmotionEffects?: boolean;
       enableAiIntro?: boolean;
       overlayStyle?: Partial<ClipOverlayStyle> | null;
@@ -1533,44 +1592,117 @@ export function createApp(options: CreateAppOptions = {}) {
     };
     const clipId = explicitClipId ?? body.clipId;
     if (!clipId || !isSafeResourceId(clipId)) {
-      res.status(400).json({ error: 'Parameter clipId tidak valid.' });
+      res.status(400).json({ code: 'INVALID_RENDER_PARAMS', error: 'Parameter clipId tidak valid.' });
+      return;
+    }
+
+    if (body.layout !== undefined && body.layout !== null && !isValidRenderLayoutInput(body.layout)) {
+      res.status(400).json({
+        code: 'INVALID_RENDER_PARAMS',
+        error: 'Parameter layout rasio video tidak valid.',
+      });
+      return;
+    }
+    if (body.quality !== undefined && body.quality !== null && !isValidRenderQualityInput(body.quality)) {
+      res.status(400).json({
+        code: 'INVALID_RENDER_PARAMS',
+        error: 'Parameter kualitas video harus "1080p" atau "4k".',
+      });
+      return;
+    }
+    if (
+      body.renderProfile !== undefined &&
+      body.renderProfile !== null &&
+      body.renderProfile !== '' &&
+      !isValidRenderProfileInput(body.renderProfile)
+    ) {
+      res.status(400).json({
+        code: 'INVALID_RENDER_PARAMS',
+        error: 'Parameter renderProfile tidak dikenal.',
+      });
       return;
     }
 
     const clip = db.getClipForUser(user.uid, clipId);
     if (!clip) {
-      res.status(404).json({ error: 'Klip tidak ditemukan.' });
+      res.status(404).json({ code: 'CLIP_NOT_FOUND', error: 'Klip tidak ditemukan atau bukan milik akun Anda.' });
       return;
     }
     const episode = db.getEpisodeForUser(user.uid, clip.episodeId);
     if (!episode) {
-      res.status(404).json({ error: 'Episode podcast sumber tidak ditemukan.' });
+      res.status(404).json({ code: 'EPISODE_NOT_FOUND', error: 'Episode podcast sumber tidak ditemukan.' });
+      return;
+    }
+
+    if (
+      !Number.isFinite(clip.startSec) ||
+      !Number.isFinite(clip.endSec) ||
+      clip.startSec < 0 ||
+      clip.endSec - clip.startSec < 2
+    ) {
+      res.status(422).json({
+        code: 'INVALID_CLIP_RANGE',
+        error: 'Rentang timestamp klip tidak valid untuk dirender (minimal 2 detik).',
+      });
       return;
     }
 
     const automation = db.getUserAutomation(user.uid);
     const resolvedLayout = normalizeRenderLayout(body.layout ?? automation.defaultRenderLayout);
-    const resolvedQuality = resolveEffectiveRenderQuality({
+    const hasExplicitQuality =
+      body.quality !== undefined && body.quality !== null && String(body.quality).trim() !== '';
+    const hasExplicitProfile =
+      typeof body.renderProfile === 'string' && body.renderProfile.trim() !== '';
+    const requestedBaseQuality = resolveEffectiveRenderQuality({
       requestedQuality: body.quality,
       enableUltraHdRender: automation.enableUltraHdRender,
       defaultRenderQuality: automation.defaultRenderQuality,
     });
 
+    let profileSpec: BalancedRenderProfileSpec;
+    if (hasExplicitProfile) {
+      profileSpec = resolveBalancedRenderProfile(body.renderProfile, requestedBaseQuality);
+    } else if (hasExplicitQuality) {
+      if (
+        clip.renderProfile &&
+        BALANCED_RENDER_PROFILES[clip.renderProfile]?.quality === requestedBaseQuality
+      ) {
+        profileSpec = resolveBalancedRenderProfile(clip.renderProfile, requestedBaseQuality);
+      } else {
+        profileSpec = resolveBalancedRenderProfile(undefined, requestedBaseQuality);
+      }
+    } else {
+      profileSpec = resolveBalancedRenderProfile(clip.renderProfile, requestedBaseQuality);
+    }
+    const resolvedQuality = profileSpec.quality;
+
+    let quotaSummary;
     try {
-      assertQuotaAvailable(db, user.uid, 'render', {
+      quotaSummary = assertQuotaAvailable(db, user.uid, 'render', {
         videoDurationSec: episode.durationSec,
       });
       if (resolvedQuality === '4k') {
-        assertQuotaAvailable(db, user.uid, 'quality_4k');
+        quotaSummary = assertQuotaAvailable(db, user.uid, 'quality_4k');
       }
     } catch (err) {
       if (err instanceof QuotaExceededError) {
-        res.status(err.status).json({ code: err.code, error: err.message });
+        const currentSummary = getUserQuotaSummary(db, user.uid);
+        res.status(err.status).json({
+          code: err.code,
+          resource: err.resource,
+          error: err.message,
+          currentPlan: currentSummary.planTier,
+          maxExportQuality: currentSummary.maxExportQuality,
+        });
         return;
       }
-      res.status(403).json({ error: 'Kuota render tercapai.' });
+      res.status(500).json({
+        code: 'QUOTA_CHECK_FAILED',
+        error: sanitizePublicErrorMessage(err, 'Gagal memeriksa hak akses & kuota render.'),
+      });
       return;
     }
+    void quotaSummary;
 
     const resolvedEmotionEffects =
       typeof body.enableEmotionEffects === 'boolean'
@@ -1584,14 +1716,56 @@ export function createApp(options: CreateAppOptions = {}) {
           ? normalizeClipOverlayStyle(body.overlayStyle)
           : undefined
         : clip.overlayStyle;
+    const storedCameraSettings = db.getCameraTrackingSettings(clip.id);
+    const resolvedCameraSettings =
+      body.cameraSettings !== undefined
+        ? body.cameraSettings
+          ? normalizeCameraTrackingSettings(clip.id, body.cameraSettings)
+          : undefined
+        : storedCameraSettings ?? clip.cameraTrackingSettings;
+    const resolvedIntroConfig =
+      body.introTemplateConfig !== undefined
+        ? body.introTemplateConfig
+          ? normalizeIntroTemplateDefinition(body.introTemplateConfig)
+          : undefined
+        : clip.introTemplateConfig;
+
     const styleFingerprint = computeOverlayStyleFingerprint(resolvedOverlayStyle);
     const targetDims = getTargetCanvasDimensions(resolvedLayout, resolvedQuality);
+    const sourceFingerprint = computeSourceFingerprint({
+      videoId: episode.videoId,
+      sourceUrl: episode.sourceUrl,
+      uploadedFileHash: getEpisodeSourceFingerprintTag(episode),
+      startSec: clip.startSec,
+      endSec: clip.endSec,
+    });
+    const renderFingerprint = computeRenderFingerprint({
+      sourceFingerprint,
+      startSec: clip.startSec,
+      endSec: clip.endSec,
+      renderProfile: profileSpec.id,
+      resolution: `${targetDims.outW}x${targetDims.outH}`,
+      codec: profileSpec.videoCodec,
+      bitrateKbps: profileSpec.maxrateKbps,
+      aspectRatio: resolvedLayout,
+      captionConfig: clip.captionCues,
+      introConfig: resolvedAiIntro ? resolvedIntroConfig ?? { enabled: true, styleFingerprint } : null,
+      cameraSettings: resolvedCameraSettings ?? null,
+      speakerOverrides: {
+        locked: resolvedCameraSettings?.lockedSpeakerKey ?? null,
+        ignored: resolvedCameraSettings?.ignoredSpeakerKeys ?? [],
+      },
+      layoutConfig: resolvedLayout,
+      overlayStyle: resolvedOverlayStyle ?? null,
+      audioSettings: {
+        normalizeAudio: resolvedOverlayStyle?.normalizeAudio ?? true,
+        emotionEffects: resolvedEmotionEffects,
+        audioBitrateKbps: profileSpec.audioBitrateKbps,
+      },
+    });
 
-    const dedupeKey = `${user.uid}:${clip.id}:${resolvedLayout}:${resolvedQuality}:${resolvedEmotionEffects ? 'emo1' : 'emo0'}:${resolvedAiIntro ? 'intro1' : 'intro0'}:${styleFingerprint}:${clip.startSec}-${clip.endSec}`;
-    const initialStage =
-      resolvedQuality === '4k'
-        ? 'Menyiapkan render 4K Ultra HD (2160p)...'
-        : 'Menyiapkan render 1080p Full HD...';
+    const dedupeKey = `${user.uid}:${clip.id}:${renderFingerprint}`;
+    const initialStage = `Menyiapkan ${profileSpec.label}...`;
 
     const { job, reused } = renderJobManager.createOrReuse({
       clipId: clip.id,
@@ -1603,6 +1777,61 @@ export function createApp(options: CreateAppOptions = {}) {
       initialProgress: 8,
       forceRestart: Boolean(body.forceRestart),
     });
+
+    let taskDispatch: { backend: string } | null = null;
+    let jobDispatch: { backend: string; executionName?: string } | null = null;
+
+    if (!reused) {
+      taskDispatch = await enqueueCloudTaskExec({
+        queue: 'video-render-dispatch',
+        idempotencyKey: `${job.jobId}:${renderFingerprint}`,
+        targetPath: '/workers/render/execute',
+        payload: {
+          jobId: job.jobId,
+          userUid: user.uid,
+          clipId: clip.id,
+          renderProfile: profileSpec.id,
+          renderFingerprint,
+        },
+      }).catch(() => null);
+
+      const externalWorkerRequired = Boolean(
+        options.requireExternalWorker || isCloudRunJobsConfigured()
+      );
+      try {
+        jobDispatch = await dispatchCloudRunJobExec({
+          renderJobId: job.jobId,
+          userUid: user.uid,
+          clipId: clip.id,
+          renderProfile: profileSpec.id,
+          renderFingerprint,
+        });
+      } catch (dispatchErr) {
+        if (externalWorkerRequired) {
+          const workerErrMsg = sanitizePublicErrorMessage(
+            dispatchErr,
+            'Layanan worker render sedang tidak tersedia. Coba beberapa saat lagi.'
+          );
+          renderJobManager.fail(job.jobId, workerErrMsg, 'WORKER_UNAVAILABLE');
+          await v3Repo.recordJobEvent({
+            jobId: job.jobId,
+            jobType: 'render',
+            userUid: user.uid,
+            stage: 'dispatch_failed',
+            status: 'failed',
+            message: workerErrMsg,
+            metadata: { renderProfile: profileSpec.id, renderFingerprint },
+          });
+          res.status(503).json({
+            code: 'WORKER_UNAVAILABLE',
+            error: workerErrMsg,
+            jobId: job.jobId,
+          });
+          return;
+        }
+        jobDispatch = null;
+      }
+    }
 
     const sseToken = createSignedStreamToken({
       uid: user.uid,
@@ -1618,22 +1847,130 @@ export function createApp(options: CreateAppOptions = {}) {
       stage: job.stage,
       progress: job.progress,
       quality: resolvedQuality,
+      renderProfile: profileSpec.id,
+      renderFingerprint,
+      sourceFingerprint,
       isUltraHd: resolvedQuality === '4k',
-      targetWidth: targetDims.outW,
-      targetHeight: targetDims.outH,
+      targetWidth: profileSpec.id === 'fast_preview' && resolvedLayout !== 'full_16_9_focus' ? 720 : targetDims.outW,
+      targetHeight: profileSpec.id === 'fast_preview' && resolvedLayout !== 'full_16_9_focus' ? 1280 : targetDims.outH,
     });
 
     if (reused) return;
 
     const jobSignal = job.abortController.signal;
+    const renderStartedAt = Date.now();
 
     void (async () => {
       try {
-        const result = await renderClipMp4({
+        await v3Repo.recordJobEvent({
+          jobId: job.jobId,
+          jobType: 'render',
+          userUid: user.uid,
+          stage: 'dispatched',
+          status: 'started',
+          message: `Job render dimulai (${profileSpec.label}, fingerprint ${renderFingerprint.slice(0, 10)}).`,
+          metadata: {
+            queueBackend: taskDispatch?.backend ?? 'local_fallback',
+            workerBackend: jobDispatch?.backend ?? 'local_worker_fallback',
+            renderProfile: profileSpec.id,
+            renderFingerprint,
+          },
+        });
+
+        // Fast render fingerprint cache hit check (unless forceRestart)
+        const cachedAsset = !body.forceRestart
+          ? await v3Repo.findRenderAssetByFingerprint(user.uid, renderFingerprint)
+          : null;
+        if (
+          cachedAsset &&
+          cachedAsset.renderProfile === profileSpec.id &&
+          cachedAsset.localPath &&
+          fs.existsSync(cachedAsset.localPath) &&
+          fs.statSync(cachedAsset.localPath).size > 10_000
+        ) {
+          renderJobManager.updateProgress(
+            job.jobId,
+            'Menggunakan cache hasil render (parameter identik)...',
+            90
+          );
+          const canonicalOut = path.resolve(process.cwd(), 'data', 'renders', `${clip.id}.mp4`);
+          fs.mkdirSync(path.dirname(canonicalOut), { recursive: true });
+          if (path.resolve(cachedAsset.localPath) !== canonicalOut) {
+            fs.copyFileSync(cachedAsset.localPath, canonicalOut);
+          }
+          const videoToken = createSignedStreamToken({
+            uid: user.uid,
+            resourceId: clip.id,
+            scope: 'clip_video',
+            ttlSec: 3600,
+          });
+          const videoUrl = `/api/clips/${clip.id}/video?st=${encodeURIComponent(videoToken)}&t=${Date.now()}`;
+          const latestClip = db.getClipForUser(user.uid, clip.id) ?? clip;
+          const cachedWasCapped =
+            resolvedQuality === '4k' && Math.max(cachedAsset.width, cachedAsset.height) < 2160;
+          const cachedEffectiveQuality: ClipRenderQuality = cachedWasCapped
+            ? '1080p'
+            : resolvedQuality;
+          const updatedClip: PodcastClip = {
+            ...latestClip,
+            renderedClipUrl: `/api/clips/${clip.id}/video`,
+            renderedLayout: resolvedLayout,
+            renderedQuality: cachedEffectiveQuality,
+            renderedFileSizeBytes: cachedAsset.sizeBytes,
+            renderProfile: profileSpec.id,
+            cameraTrackingSettings: resolvedCameraSettings ?? latestClip.cameraTrackingSettings,
+            introTemplateConfig: resolvedIntroConfig ?? latestClip.introTemplateConfig,
+          };
+          db.upsertClip(user.uid, updatedClip);
+          await v3Repo.recordJobEvent({
+            jobId: job.jobId,
+            jobType: 'render',
+            userUid: user.uid,
+            stage: 'cache_hit',
+            status: 'completed',
+            message: 'Render instan selesai dari cache fingerprint.',
+            durationMs: Date.now() - renderStartedAt,
+            metadata: { renderFingerprint, sizeBytes: cachedAsset.sizeBytes },
+          });
+          await v3Repo.recordPerformanceMetric({
+            userUid: user.uid,
+            category: 'render',
+            operation: `render_${profileSpec.id}`,
+            durationMs: Date.now() - renderStartedAt,
+            success: true,
+            cacheHit: true,
+            metadata: { clipId: clip.id, sizeBytes: cachedAsset.sizeBytes },
+          });
+          renderJobManager.complete(job.jobId, {
+            videoUrl,
+            renderedClipUrl: videoUrl,
+            sizeBytes: cachedAsset.sizeBytes,
+            width: cachedAsset.width,
+            height: cachedAsset.height,
+            layout: resolvedLayout,
+            quality: cachedEffectiveQuality,
+            renderProfile: profileSpec.id,
+            cacheHit: true,
+            isUltraHd: cachedEffectiveQuality === '4k',
+            upscalePrevented: cachedWasCapped,
+            upscaleNote: cachedWasCapped
+              ? `Sumber video hanya tersedia pada resolusi di bawah 4K. Cache menggunakan output ${cachedAsset.width}×${cachedAsset.height} tanpa upscaling otomatis.`
+              : undefined,
+            store: buildUserStudioState(db, user.uid),
+          });
+          return;
+        }
+
+        const result = await renderClipExec({
           episode,
           clip,
           layout: resolvedLayout,
           quality: resolvedQuality,
+          renderProfile: profileSpec.id,
+          cameraSettings: resolvedCameraSettings,
+          introTemplateConfig: resolvedIntroConfig,
+          sourceFingerprint,
+          renderFingerprint,
           enableEmotionEffects: resolvedEmotionEffects,
           enableAiIntro: resolvedAiIntro,
           overlayStyle: resolvedOverlayStyle,
@@ -1644,6 +1981,33 @@ export function createApp(options: CreateAppOptions = {}) {
         });
         if (jobSignal.aborted) return;
 
+        const intel = result.intelligence;
+        if (intel.cameraAnalysis) {
+          await v3Repo.saveCameraAnalysis({
+            userUid: user.uid,
+            clip,
+            episode,
+            speakers: intel.cameraAnalysis.speakers,
+            faceTracks: intel.cameraAnalysis.faceTracks,
+            speakerSegments: intel.cameraAnalysis.speakerSegments,
+            cameraSegments: intel.cameraAnalysis.cameraSegments,
+          });
+        }
+
+        const storageOut = await finalizeRenderWorkerOutput({
+          renderJobId: job.jobId,
+          userUid: user.uid,
+          clipId: clip.id,
+          renderProfile: profileSpec.id,
+          renderFingerprint,
+          sourceFingerprint,
+          localOutputPath: result.outputPath,
+          width: result.width,
+          height: result.height,
+          durationSec: result.durationSec,
+          db,
+        });
+
         const videoToken = createSignedStreamToken({
           uid: user.uid,
           resourceId: clip.id,
@@ -1651,7 +2015,6 @@ export function createApp(options: CreateAppOptions = {}) {
           ttlSec: 3600,
         });
         const videoUrl = `/api/clips/${clip.id}/video?st=${encodeURIComponent(videoToken)}&t=${Date.now()}`;
-        const intel = result.intelligence;
         const isAudioAccurate = intel.subtitleSource === 'audio_transcribed';
 
         const latestClip = db.getClipForUser(user.uid, clip.id) ?? clip;
@@ -1675,6 +2038,7 @@ export function createApp(options: CreateAppOptions = {}) {
           renderedClipUrl: `/api/clips/${clip.id}/video`,
           renderedLayout: result.layout,
           renderedQuality: result.quality,
+          renderProfile: result.renderProfile,
           renderedSourceWidth: result.sourceWidth,
           renderedSourceHeight: result.sourceHeight,
           renderedSourceType: result.sourceUsed,
@@ -1696,6 +2060,11 @@ export function createApp(options: CreateAppOptions = {}) {
           introTeaser: result.resolvedIntro.teaser,
           introDurationSec: result.resolvedIntro.durationSec,
           overlayStyle: resolvedOverlayStyle ?? latestClip.overlayStyle,
+          cameraTrackingSettings:
+            intel.cameraAnalysis?.settings ??
+            resolvedCameraSettings ??
+            latestClip.cameraTrackingSettings,
+          introTemplateConfig: resolvedIntroConfig ?? latestClip.introTemplateConfig,
           platformCopies: {
             ...latestClip.platformCopies,
             youtube_shorts: nextYoutubeCopy,
@@ -1705,11 +2074,43 @@ export function createApp(options: CreateAppOptions = {}) {
         db.upsertClip(user.uid, updatedClip);
         consumeQuota(db, user.uid, 'render', result.sizeBytes);
 
+        const totalDurationMs = Date.now() - renderStartedAt;
+        await v3Repo.recordJobEvent({
+          jobId: job.jobId,
+          jobType: 'render',
+          userUid: user.uid,
+          stage: 'completed',
+          status: 'completed',
+          message: `Render ${profileSpec.label} selesai (${result.width}x${result.height}, ${storageOut.storageBackend}).`,
+          durationMs: totalDurationMs,
+          metadata: {
+            storageBackend: storageOut.storageBackend,
+            gcsUri: storageOut.gcsUri,
+            sizeBytes: result.sizeBytes,
+            renderFingerprint,
+            upscalePrevented: result.upscalePrevented,
+          },
+        });
+        await v3Repo.recordPerformanceMetric({
+          userUid: user.uid,
+          category: 'render',
+          operation: `render_${profileSpec.id}`,
+          durationMs: totalDurationMs,
+          success: true,
+          cacheHit: false,
+          metadata: {
+            clipId: clip.id,
+            sizeBytes: result.sizeBytes,
+            width: result.width,
+            height: result.height,
+          },
+        });
+
         db.createNotification({
           userUid: user.uid,
           type: 'render_complete',
           title: 'Render Video Klip Selesai',
-          message: `Klip "${updatedClip.title.slice(0, 60)}" siap diunduh (${result.quality.toUpperCase()}).`,
+          message: `Klip "${updatedClip.title.slice(0, 60)}" siap diunduh (${profileSpec.label}).`,
           relatedId: updatedClip.id,
         });
 
@@ -1724,7 +2125,12 @@ export function createApp(options: CreateAppOptions = {}) {
           sourceUsed: result.sourceUsed,
           layout: result.layout,
           quality: result.quality,
+          renderProfile: result.renderProfile,
+          storageBackend: storageOut.storageBackend,
+          cacheHit: false,
           isUltraHd: result.quality === '4k',
+          upscalePrevented: result.upscalePrevented,
+          upscaleNote: result.upscaleNote,
           emotionEffectsEnabled: result.emotionEffectsEnabled,
           emotionMoments: intel.emotionMoments,
           emotionSummary: intel.emotionSummary,
@@ -1732,24 +2138,55 @@ export function createApp(options: CreateAppOptions = {}) {
           intro: result.resolvedIntro,
           subtitleSource: intel.subtitleSource,
           speakerFocusSummary: intel.speakerFocusSummary,
+          cameraAnalysis: intel.cameraAnalysis,
           autoTitle: intel.autoTitle,
           autoCaption: intel.autoCaption,
           store: buildUserStudioState(db, user.uid),
         });
       } catch (err) {
         if (err instanceof RenderCancelledError || jobSignal.aborted) {
+          await v3Repo.recordJobEvent({
+            jobId: job.jobId,
+            jobType: 'render',
+            userUid: user.uid,
+            stage: 'cancelled',
+            status: 'cancelled',
+            message: 'Proses render dibatalkan.',
+            durationMs: Date.now() - renderStartedAt,
+          });
           renderJobManager.cancel(job.jobId, 'Proses render dibatalkan.');
           return;
         }
-        const safeErr =
+        const errorCode =
           err instanceof YoutubeBotCheckError
+            ? err.code
+            : err instanceof RenderTimeoutError
+              ? err.code
+              : 'WORKER_FAILED';
+        const safeErr =
+          err instanceof YoutubeBotCheckError || err instanceof RenderTimeoutError
             ? err.message
             : sanitizePublicErrorMessage(err, 'Gagal merender video klip MP4.');
-        renderJobManager.fail(
-          job.jobId,
-          safeErr,
-          err instanceof YoutubeBotCheckError ? err.code : undefined
-        );
+        await v3Repo.recordJobEvent({
+          jobId: job.jobId,
+          jobType: 'render',
+          userUid: user.uid,
+          stage: 'failed',
+          status: 'failed',
+          message: safeErr,
+          durationMs: Date.now() - renderStartedAt,
+          metadata: { errorCode },
+        });
+        await v3Repo.recordPerformanceMetric({
+          userUid: user.uid,
+          category: 'render',
+          operation: `render_${profileSpec.id}`,
+          durationMs: Date.now() - renderStartedAt,
+          success: false,
+          cacheHit: false,
+          metadata: { clipId: clip.id, error: safeErr, errorCode },
+        });
+        renderJobManager.fail(job.jobId, safeErr, errorCode);
         db.createNotification({
           userUid: user.uid,
           type: 'render_failed',
@@ -1762,11 +2199,11 @@ export function createApp(options: CreateAppOptions = {}) {
   };
 
   app.post('/api/clips/:clipId/render-mp4', renderRateLimit, requireAuth, (req: AuthenticatedRequest, res) => {
-    handleEnqueueRender(req, res, req.params.clipId);
+    void handleEnqueueRender(req, res, req.params.clipId);
   });
 
   app.post('/api/render', renderRateLimit, requireAuth, (req: AuthenticatedRequest, res) => {
-    handleEnqueueRender(req, res);
+    void handleEnqueueRender(req, res);
   });
 
   app.get('/api/clips/:clipId/video', async (req: AuthenticatedRequest, res) => {
@@ -2310,7 +2747,7 @@ export function createApp(options: CreateAppOptions = {}) {
     }
   );
 
-  // Mount modular AICLIPER 2.0 routes (/api/v2/*)
+  // Mount modular AICLIPER 2.0 & V3 Production routes (/api/v2/* and /api/v3/*)
   app.use(
     '/api/v2',
     createV2Router({
@@ -2321,6 +2758,17 @@ export function createApp(options: CreateAppOptions = {}) {
       apiRateLimit,
       aiRateLimit,
       getClientIp,
+    })
+  );
+
+  app.use(
+    '/api/v3',
+    createV3Router({
+      db,
+      requireAuth,
+      apiRateLimit,
+      renderRateLimit,
+      onEnqueueRender: handleEnqueueRender,
     })
   );
 

@@ -73,6 +73,27 @@ export async function closePgPool(): Promise<void> {
   }
 }
 
+export async function checkPgHealth(): Promise<{
+  connected: boolean;
+  latencyMs?: number;
+  error?: string;
+}> {
+  if (!isPostgresConfigured()) {
+    return { connected: false, error: 'Cloud SQL environment variables not configured' };
+  }
+  const started = Date.now();
+  try {
+    await getPgPool().query('SELECT 1');
+    return { connected: true, latencyMs: Date.now() - started };
+  } catch (err) {
+    return {
+      connected: false,
+      latencyMs: Date.now() - started,
+      error: err instanceof Error ? err.message : 'PostgreSQL health check failed',
+    };
+  }
+}
+
 export function sanitizePgError(err: unknown): { status: number; error: string } {
   const code = (err as { code?: string; cause?: { code?: string } })?.code ||
     (err as { cause?: { code?: string } })?.cause?.code;

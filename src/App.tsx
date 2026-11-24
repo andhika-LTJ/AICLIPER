@@ -9,7 +9,9 @@ import { ClipPublisherPanel } from './components/ClipPublisherPanel';
 import { DistributionQueueView } from './components/DistributionQueueView';
 import { ManualShortsModal } from './components/ManualShortsModal';
 import { PodcastInputBar } from './components/PodcastInputBar';
+import { ProfessionalIntroStudioPanel } from './components/ProfessionalIntroStudioPanel';
 import { ShortsPreviewStage } from './components/ShortsPreviewStage';
+import { SmartCameraEditorPanel } from './components/SmartCameraEditorPanel';
 import { SmartVideoEditorView } from './components/SmartVideoEditorView';
 import { SummaryArchiveView } from './components/SummaryArchiveView';
 import { TopBar, type NavSection } from './components/TopBar';
@@ -60,6 +62,7 @@ export default function App() {
     text: string;
   } | null>(null);
   const [isManualModalOpen, setIsManualModalOpen] = useState(false);
+  const [studioV3Tab, setStudioV3Tab] = useState<'camera' | 'intro'>('camera');
   const [themePreset, setThemePreset] = useState<ThemePreset>(() => {
     if (typeof window !== 'undefined') {
       const savedPreset = window.localStorage.getItem('klipcast_theme_preset');
@@ -653,12 +656,21 @@ export default function App() {
                   defaultEmotionEffectsEnabled={store.automation.enableAiEmotionEffects}
                   defaultAiIntroEnabled={store.automation.enableAiIntro}
                   ultraHdEnabled={store.automation.enableUltraHdRender}
+                  maxExportQuality={store.quota?.maxExportQuality ?? '1080p'}
+                  planTier={store.quota?.planTier ?? 'free'}
                   isAuthenticated={isAuthenticatedWithGoogle}
                   canManageCookies={isAdmin}
                   onSaveTrim={handleSaveTrim}
                   onSaveOverlayStyle={(clipId, overlayStyle) =>
                     handleUpdateClip(clipId, { overlayStyle })
                   }
+                  onOpenV3Studio={(tab) => {
+                    setStudioV3Tab(tab);
+                    document.getElementById('studio-v3-workbench')?.scrollIntoView({
+                      behavior: 'smooth',
+                      block: 'start',
+                    });
+                  }}
                   onStoreUpdate={setStore}
                 />
 
@@ -698,6 +710,82 @@ export default function App() {
                   </button>
                 )}
               </div>
+            )}
+
+            {!isLoadingStore && activeEpisode && activeClip && (
+              <section
+                id="studio-v3-workbench"
+                aria-label="Studio Produksi Lanjutan Kamera & Intro"
+                className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 space-y-4"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h2 className="font-display text-base font-bold text-slate-900 dark:text-white">
+                      Studio Kamera Pembicara AI & Intro Profesional
+                    </h2>
+                    <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
+                      Atur tracking pembicara aktif dengan histeresis stabil dan kustomisasi intro 22 kategori sebelum merender MP4.
+                    </p>
+                  </div>
+
+                  <div
+                    role="tablist"
+                    aria-label="Tab Studio Kamera dan Intro"
+                    className="inline-flex items-center p-1 bg-slate-100 dark:bg-slate-800 rounded-lg"
+                  >
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={studioV3Tab === 'camera'}
+                      onClick={() => setStudioV3Tab('camera')}
+                      className={`px-3 py-1.5 text-xs font-semibold rounded-md cursor-pointer whitespace-nowrap ${
+                        studioV3Tab === 'camera'
+                          ? 'bg-white dark:bg-slate-950 text-slate-900 dark:text-white shadow-xs'
+                          : 'text-slate-600 dark:text-slate-300'
+                      }`}
+                    >
+                      Kamera Pembicara AI
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={studioV3Tab === 'intro'}
+                      onClick={() => setStudioV3Tab('intro')}
+                      className={`px-3 py-1.5 text-xs font-semibold rounded-md cursor-pointer whitespace-nowrap ${
+                        studioV3Tab === 'intro'
+                          ? 'bg-white dark:bg-slate-950 text-slate-900 dark:text-white shadow-xs'
+                          : 'text-slate-600 dark:text-slate-300'
+                      }`}
+                    >
+                      Studio Intro Pro (22 Kategori)
+                    </button>
+                  </div>
+                </div>
+
+                {studioV3Tab === 'camera' ? (
+                  <SmartCameraEditorPanel
+                    clip={activeClip}
+                    isAuthenticated={isAuthenticatedWithGoogle}
+                    onSaveCameraSettings={async (cameraSettings) => {
+                      await handleUpdateClip(activeClip.id, {
+                        cameraTrackingSettings: cameraSettings,
+                      });
+                    }}
+                  />
+                ) : (
+                  <ProfessionalIntroStudioPanel
+                    clip={activeClip}
+                    episodeTitle={activeEpisode.title}
+                    isAuthenticated={isAuthenticatedWithGoogle}
+                    onApplyIntroConfig={async (introTemplateConfig) => {
+                      await handleUpdateClip(activeClip.id, {
+                        introTemplateConfig,
+                        introDurationSec: introTemplateConfig.durationSec,
+                      });
+                    }}
+                  />
+                )}
+              </section>
             )}
           </div>
         )}
@@ -779,6 +867,8 @@ export default function App() {
             config={store.automation}
             isAuthenticated={isAuthenticatedWithGoogle}
             canManageCookies={isAdmin}
+            maxExportQuality={store.quota?.maxExportQuality ?? '1080p'}
+            planTier={store.quota?.planTier ?? 'free'}
             onSaveConfig={handleSaveAutomation}
             onResetDemo={handleResetDemo}
           />
@@ -801,6 +891,7 @@ export default function App() {
                 : store.automation.defaultRenderQuality
             }
             defaultRenderLayout={store.automation.defaultRenderLayout}
+            maxExportQuality={store.quota?.maxExportQuality ?? '1080p'}
             onClose={() => setIsManualModalOpen(false)}
             onMarkManualPublished={(id) => handlePublishClip(id, 'manual', ['youtube_shorts'])}
             onStoreUpdate={setStore}
